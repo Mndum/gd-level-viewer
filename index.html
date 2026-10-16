@@ -209,13 +209,15 @@
           <label class="chk"><input id="songAuto" type="checkbox" checked> load the level's song automatically</label>
         </div>
         <div class="menuRow">
+          <button class="gdbtn wide green" id="btnSongFolder" title="Pick the folder where Geometry Dash keeps downloaded songs: %LOCALAPPDATA%\GeometryDash">Choose game save folder&hellip;</button>
+          <button class="gdbtn wide" id="btnSongReconnect" hidden>Reconnect song folder</button>
           <label class="gdbtn wide" style="cursor:pointer">Load song file&hellip; <input id="songFile" type="file" accept="audio/*" hidden></label>
         </div>
         <div class="menuRow">
           <input id="songService" type="url" placeholder="https://your-song-service.example (optional)" style="flex:1;min-width:220px;height:36px;border-radius:8px;border:2px solid #050912;padding:0 8px;font:inherit">
           <button class="gdbtn wide" id="songServiceSave" style="height:36px;font-size:14px">Save</button>
         </div>
-        <div class="small">A page in a browser cannot ask the Geometry Dash servers for a song by itself, so it uses a small lookup service (built in; change it above if you run your own). The song then streams straight from Newgrounds and is dropped when you open another level. You can also load an audio file yourself (kept in memory only).</div>
+        <div class="small">Songs play from your own computer: the game saves every song it downloads as <b>&lt;song id&gt;.mp3</b> in <b>%LOCALAPPDATA%\GeometryDash</b> (paste that into the folder dialog&#39;s address bar). Newgrounds does not allow other sites to stream its audio, so this page never does. The lookup service is only used for the song&#39;s name and artist. Kept in memory only and dropped when you open another level.</div>
       </div>
 
       <div class="menuSec">
@@ -1211,12 +1213,26 @@ $('assets').onchange = async e => {
   } catch (err) { showError(err); }
 };
 
-// ---------- song: optional lookup service, or a song file you load yourself ----------
+// ---------- song: played from YOUR copy (the game's own download folder), never streamed from Newgrounds ----------
+// Newgrounds blocks hotlinking, and the game itself keeps every song it downloads as <songID>.mp3/.ogg in
+// %LOCALAPPDATA%\GeometryDash. The page reads it from there (folder chosen once), or from a file you load.
+const DEFAULT_SONG_SERVICE = 'https://gd-song-service.monochromdum.workers.dev';   // name/artist lookup only
 const SERVICE_KEY = 'gd-level-viewer.songService';
 const song = { id: 0, audio: null, fileUrl: null, info: null, token: 0, label: '' };
-const DEFAULT_SONG_SERVICE = 'https://gd-song-service.monochromdum.workers.dev';   // your deployed Cloudflare Worker
+let songFolder = null;                       // handle to the game's save folder
 function songService() { try { return (localStorage.getItem(SERVICE_KEY) || DEFAULT_SONG_SERVICE).replace(/\/+$/, ''); } catch (e) { return DEFAULT_SONG_SERVICE; } }
 function setSongStatus(t) { $('songStatus').textContent = t; }
+function setSongLink(id) {
+  let a = $('songLink');
+  if (!a) {
+    a = document.createElement('a');
+    a.id = 'songLink'; a.target = '_blank'; a.rel = 'noopener';
+    a.style.cssText = 'color:var(--gold);font-size:12px;font-weight:500;display:none';
+    $('songStatus').insertAdjacentElement('afterend', a);
+  }
+  if (id) { a.href = 'https://www.newgrounds.com/audio/listen/' + id; a.textContent = 'Open song ' + id + ' on Newgrounds'; a.style.display = 'inline-block'; }
+  else a.style.display = 'none';
+}
 function updateSongChip() {
   const chip = $('songChip');
   if (!song.label) { chip.style.display = 'none'; return; }
@@ -1236,7 +1252,7 @@ function clearSong() {
   if (song.audio) { song.audio.pause(); song.audio.removeAttribute('src'); song.audio.load(); song.audio = null; }
   if (song.fileUrl) { URL.revokeObjectURL(song.fileUrl); song.fileUrl = null; }
   song.info = null; song.id = 0; song.label = '';
-  setSongStatus('no song loaded');
+  setSongStatus('no song loaded'); setSongLink(0);
   updateSongChip(); setMusicIcon();
 }
 function attachAudio(src, label) {
@@ -1245,33 +1261,45 @@ function attachAudio(src, label) {
   a.src = src;
   a.addEventListener('play', () => { updateSongChip(); setMusicIcon(); });
   a.addEventListener('pause', () => { updateSongChip(); setMusicIcon(); });
-  a.addEventListener('error', () => setSongStatus('the song could not be played (the link may have expired or been blocked)'));
+  a.addEventListener('error', () => setSongStatus('the song file could not be played'));
   song.audio = a; song.label = label;
   updateSongChip(); setMusicIcon();
 }
+async function findSongFile(id) {
+  if (!songFolder) return null;
+  try { if ((await songFolder.queryPermission({ mode: 'read' })) !== 'granted') return null; } catch (e) { return null; }
+  for (const ext of ['mp3', 'ogg']) {
+    try { return await (await songFolder.getFileHandle(`${id}.${ext}`)).getFile(); } catch (e) { /* try the next extension */ }
+  }
+  return null;
+}
 async function loadSong(id) {
   clearSong();
-  if (!id) { setSongStatus('this level uses an official song, so there is nothing to download'); return; }
-  const svc = songService();
-  if (!svc) {
-    setSongStatus(`this level uses Newgrounds song ${id}. Add a song service in the menu, or load the audio file yourself ("Load song file…").`);
-    return;
-  }
+  if (!id) { setSongStatus('this level uses an official song, so there is nothing to look up'); return; }
   song.id = id;
   const my = ++song.token;
-  setSongStatus(`looking up song ${id}…`);
+  setSongLink(id);
+  // name and artist from the lookup service (optional; failing is fine)
+  let info = null;
   try {
-    const r = await fetch(`${svc}/info/${id}`);
-    if (!r.ok) throw new Error((await r.text()) || ('service returned ' + r.status));
-    const info = await r.json();
-    if (my !== song.token) return;
-    if (!info.url) throw new Error('the service did not return a song link');
-    song.info = info;
-    attachAudio(info.url, info.name || ('Song ' + id));       // streamed straight from Newgrounds, never stored by this page
-    setSongStatus(`ready: "${info.name}" by ${info.artist} - press the music button to play`);
-  } catch (e) {
-    if (my !== song.token) return;
-    setSongStatus('could not load the song: ' + (e && e.message || e));
+    const r = await fetch(`${songService()}/info/${id}`);
+    if (r.ok) info = await r.json();
+  } catch (e) { /* offline or blocked: carry on without the name */ }
+  if (my !== song.token) return;
+  song.info = info;
+  const nice = info && info.name ? `"${info.name}" by ${info.artist}` : `song ${id}`;
+  const file = await findSongFile(id);
+  if (my !== song.token) return;
+  if (file) {
+    song.fileUrl = URL.createObjectURL(file);                      // memory only, revoked when another level opens
+    attachAudio(song.fileUrl, (info && info.name) || file.name);
+    setSongStatus(`ready: ${nice} (from your game folder) - press the music button to play`);
+  } else {
+    song.label = (info && info.name) || ('Song ' + id);
+    updateSongChip();
+    setSongStatus(songFolder
+      ? `${nice} is not in your game folder yet. Open the level once in Geometry Dash so it downloads the song, or load the audio file yourself.`
+      : `${nice}. Choose your Geometry Dash save folder below so the page can play it, or load the audio file yourself.`);
   }
 }
 function toggleSong() {
@@ -1284,19 +1312,56 @@ $('songFile').onchange = e => {
   const f = e.target.files[0];
   if (!f) return;
   clearSong();
-  song.fileUrl = URL.createObjectURL(f);                      // memory only, revoked when another level opens
+  song.fileUrl = URL.createObjectURL(f);
   attachAudio(song.fileUrl, f.name);
   setSongStatus(`loaded "${f.name}" (kept in memory only)`);
 };
+
+// the game's save folder, remembered by the browser like the Resources folder
+async function chooseSongFolder() {
+  if (!window.showDirectoryPicker) { setSongStatus('This browser cannot remember a folder. Use Chrome or Edge, or load the audio file yourself.'); return; }
+  try {
+    const h = await window.showDirectoryPicker({ id: 'gd-save', mode: 'read' });
+    songFolder = h;
+    try { await kvSet('gdSongFolder', h); } catch (e) { /* convenience only */ }
+    $('btnSongReconnect').hidden = true;
+    if (level && Number(meta.k45 || 0)) loadSong(Number(meta.k45));
+    else setSongStatus('song folder saved');
+  } catch (e) { if (!e || e.name !== 'AbortError') showError(e); }
+}
+async function reconnectSongFolder() {
+  try {
+    if (!songFolder) return;
+    const p = await songFolder.requestPermission({ mode: 'read' });
+    if (p !== 'granted') { setSongStatus('Permission was not granted for the saved song folder.'); return; }
+    $('btnSongReconnect').hidden = true;
+    if (level && Number(meta.k45 || 0)) loadSong(Number(meta.k45));
+  } catch (e) { showError(e); }
+}
+async function autoLoadSongFolder() {
+  if (!window.showDirectoryPicker) return;
+  try {
+    const h = await kvGet('gdSongFolder');
+    if (!h) return;
+    songFolder = h;
+    const p = await h.queryPermission({ mode: 'read' });
+    if (p === 'granted') { if (level && Number(meta.k45 || 0)) loadSong(Number(meta.k45)); }
+    else { $('btnSongReconnect').hidden = false; setSongStatus('Saved song folder found. Click "Reconnect song folder" to allow access again.'); }
+  } catch (e) { /* optional */ }
+}
+$('btnSongFolder').onclick = chooseSongFolder;
+$('btnSongReconnect').onclick = reconnectSongFolder;
+const _autoLoadAssetsOnly = autoLoadAssets;
+autoLoadAssets = async function () { await autoLoadSongFolder(); return _autoLoadAssetsOnly(); };
+
 $('songService').value = songService();
 $('songServiceSave').onclick = () => {
   try {
     const v = $('songService').value.trim();
     if (v) localStorage.setItem(SERVICE_KEY, v); else localStorage.removeItem(SERVICE_KEY);
-    setSongStatus(v ? 'song service saved. Reopen the level to look the song up.' : 'song service reset to the built-in default');
+    setSongStatus(v ? 'lookup service saved. Reopen the level to refresh the song name.' : 'lookup service reset to the built-in default');
   } catch (e) { setSongStatus('could not save the setting in this browser'); }
 };
-
 // loading any other level discards the current song first
 const _loadFromText = loadFromText;
 loadFromText = async function (raw, name) {

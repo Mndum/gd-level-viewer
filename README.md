@@ -12,7 +12,7 @@ View and edit Geometry Dash level files in your browser, in the style of the in-
   never changed. Edited levels have not been tested inside Geometry Dash itself, so keep your original.
 - Shader gallery: ten named image effects applied to the view, with Save PNG.
 - UHD sprites by default, HD selectable.
-- The level's Newgrounds song can be played (see below), and is dropped when you open another level.
+- The level's song plays from your own game folder (see below) and is dropped when you open another level.
 
 ## Using it
 
@@ -26,12 +26,15 @@ Everything happens in your browser. Your level and the game files are not upload
 
 ## Songs
 
-A web page cannot ask Geometry Dash's servers for a song by itself, so the page uses a tiny lookup
-service ([`worker/song-service.worker.js`](worker/song-service.worker.js), a Cloudflare Worker).
-It returns the song's name, artist and Newgrounds link; the audio then streams straight from
-Newgrounds and is never stored. You can run your own copy and change the address in Menu → Song,
-or load an audio file yourself ("Load song file…").
+Newgrounds does not allow other sites to stream its audio, so this page never does. Instead:
 
+- Geometry Dash saves every song it downloads as `<song id>.mp3` in `%LOCALAPPDATA%\GeometryDash`.
+  Menu → Song → **Choose game save folder…** (once; the browser remembers it) and the page plays the
+  level's song from there. The song is kept in memory only and dropped when you open another level.
+- Or use **Load song file…** with any audio file.
+- A small lookup service ([`worker/song-service.worker.js`](worker/song-service.worker.js), a Cloudflare
+  Worker) is used only to show the song's name and artist, and the page links to the song's Newgrounds page.
+  You can run your own copy and change the address in Menu → Song.
 ## What is and isn't in this repository
 
 - This repository contains **no game assets**: no sprites, fonts, audio or shader code from
