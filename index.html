@@ -3601,6 +3601,7 @@ function stopPlay() {
     '<select id="onlineType"><option value="0">Search</option><option value="1">Most downloaded</option><option value="2">Most liked</option><option value="3">Trending</option><option value="4">Recent</option><option value="6">Featured</option><option value="11">Awarded</option><option value="16">Hall of Fame</option></select>' +
     '<button class="gdbtn green" id="onlineGo">Search</button></div>' +
     '<div id="onlineMsg"></div><div id="onlineList"></div>' +
+    '<div style="display:flex;gap:6px;margin-top:6px"><input id="onlineSvc" type="url" placeholder="https://your-level-service.workers.dev" style="flex:1;height:32px;border-radius:8px;border:2px solid #050912;padding:0 8px;font:inherit;background:#fff;color:#111"><button class="gdbtn" id="onlineSvcSave">Save</button></div>' +
     '<div style="display:flex;gap:8px;justify-content:center"><button class="gdbtn" id="onlinePrev">&lt;</button><span id="onlinePage" class="small" style="align-self:center">page 1</span><button class="gdbtn" id="onlineNext">&gt;</button>' +
     '<button class="gdbtn wide green" id="onlineClose">Close</button></div></div>';
   document.body.appendChild(overlay);
@@ -3611,12 +3612,16 @@ function stopPlay() {
   q('onlineClose').onclick = close;
   addEventListener('keydown', e => { if (e.code === 'Escape' && overlay.classList.contains('on')) { e.stopImmediatePropagation(); close(); } }, true);
 
-  const base = () => (typeof songService === 'function' ? songService() : '');
+  // the address of your level-search worker (worker/level-service.worker.js). Put it in DEFAULT_LEVEL_SERVICE to bake it in, or paste it in the dialog.
+  const DEFAULT_LEVEL_SERVICE = '';
+  const SERVICE_KEY = 'gd-level-viewer.levelService';
+  const base = () => { try { return (localStorage.getItem(SERVICE_KEY) || DEFAULT_LEVEL_SERVICE).replace(/\/+$/, ''); } catch (e) { return DEFAULT_LEVEL_SERVICE; } };
   async function api(path) {
+    if (!base()) throw new Error('Paste the address of your level search service below first (see worker/level-service.worker.js).');
     let r;
     try { r = await fetch(base() + path); } catch (e) { throw new Error('Could not reach the search service. Check your connection.'); }
     let j = null; try { j = await r.json(); } catch (e) { /* handled below */ }
-    if (!r.ok || !j) throw new Error(r.status === 404 && j && j.error === 'not found' ? 'The song service has not been updated with search yet (deploy worker/song-service.worker.js).' : (j && j.error) || ('The service returned ' + r.status));
+    if (!r.ok || !j) throw new Error(r.status === 404 && j && j.error === 'not found' ? 'That address is not a level search service (it should be the deployed worker/level-service.worker.js).' : (j && j.error) || ('The service returned ' + r.status));
     return j;
   }
 
@@ -3676,7 +3681,9 @@ function stopPlay() {
   q('onlineQ').addEventListener('keydown', e => { if (e.key === 'Enter') { state.page = 0; run(); } });
   q('onlinePrev').onclick = () => { if (state.page > 0) { state.page--; run(); } };
   q('onlineNext').onclick = () => { state.page++; run(); };
-  window.showOnlineLevels = () => { overlay.classList.add('on'); q('onlineQ').focus(); };
+  q('onlineSvc').value = base();
+  q('onlineSvcSave').onclick = () => { try { localStorage.setItem(SERVICE_KEY, q('onlineSvc').value.trim()); msg('Saved.'); } catch (e) { msg('Could not save the address in this browser.'); } };
+  window.showOnlineLevels = () => { overlay.classList.add('on'); q('onlineQ').focus(); if (!base()) msg('Paste the address of your level search service below.'); };
 
   function addButtons() {
     const foot = $('menuClose') && $('menuClose').parentElement;
