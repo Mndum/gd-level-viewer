@@ -5100,29 +5100,65 @@ function goptOverlay() {
   }
   const groupList = o => (o.raw && o.raw['57'] ? String(o.raw['57']).split('.').map(Number).filter(n => n > 0) : []);
   let pendingGroup = 1;
-  function editGroupDialog() {
-    const o = smallDialog(1000, 640, 'Edit Group', 80);
+  function groupBody(o, y0) {
     const p = selObjs()[selObjs().length - 1];
     const list = p ? groupList(p) : [];
-    txt(root, 'big', list.length ? 'Groups: ' + list.join(', ') : 'No groups', 44, o(500, 190, 900, 60));
-    numRow(o, 300, 'Group:', () => pendingGroup, v => { pendingGroup = Math.max(1, Math.min(9999, v)); });
+    txt(root, 'big', list.length ? 'Groups: ' + list.join(', ') : 'No groups', 44, o(o.w2 || 500, y0, 900, 60));
+    numRow(o, y0 + 110, 'Group:', () => pendingGroup, v => { pendingGroup = Math.max(1, Math.min(9999, v)); });
     const apply = fn => () => { A.editRaw(selObjs(), ob => { const gs = fn(groupList(ob)); A.setKey(ob, '57', gs.length ? gs.join('.') : undefined); }, 'groups'); open(current); };
-    nbtn(root, 'GJ_button_01', null, o(180, 430, 230, 90), apply(g => g.includes(pendingGroup) ? g : g.concat(pendingGroup)), 'Add', 'gold', 54);
-    nbtn(root, 'GJ_button_06', null, o(430, 430, 250, 90), apply(g => g.filter(n => n !== pendingGroup)), 'Remove', 'gold', 54);
-    nbtn(root, 'GJ_button_04', null, o(700, 430, 230, 90), apply(() => []), 'Clear', 'gold', 54);
+    nbtn(root, 'GJ_button_01', null, o(180, y0 + 240, 230, 90), apply(g => g.includes(pendingGroup) ? g : g.concat(pendingGroup)), 'Add', 'gold', 54);
+    nbtn(root, 'GJ_button_06', null, o(430, y0 + 240, 250, 90), apply(g => g.filter(n => n !== pendingGroup)), 'Remove', 'gold', 54);
+    nbtn(root, 'GJ_button_04', null, o(700, y0 + 240, 230, 90), apply(() => []), 'Clear', 'gold', 54);
+  }
+  function editGroupDialog() {
+    const o = smallDialog(1000, 640, 'Edit Group', 80);
+    groupBody(o, 190);
     nbtn(root, 'GJ_button_01', null, o(500, 570, 190, 90), close, 'OK', 'gold', 60);
   }
   const keyRow = (o, y, label, key, def, lo, hi, step) => numRow(o, y, label, () => rawNumOf(selObjs()[selObjs().length - 1] || {}, key, def),
     v => A.editRaw(selObjs(), ob => A.setKey(ob, key, Math.round(Math.max(lo, Math.min(hi, v)) * 1000) / 1000), label), step || 1);
+  // Edit Object: four tabs like the game's popup (Transform / Colour / Groups / Layers)
+  let eoTab = 0;
+  const EO_TABS = ['Transform', 'Colour', 'Groups', 'Layers'];
+  const Z_LAYERS = [['B5', -5], ['B4', -3], ['B3', -1], ['B2', 1], ['B1', 3], ['T1', 5], ['T2', 7], ['T3', 9], ['T4', 11]];
+  const lastSel = () => selObjs()[selObjs().length - 1];
+  // transform rows change every selected object by the same amount (absolute value shown for the last one)
+  const propRow = (o, y, label, get, apply, step) => numRow(o, y, label, get, v => { const sel = selObjs(), d = v - get(); if (sel.length) pushOp(opProps(sel, ob => apply(ob, d, v), label)); }, step);
+  let pickCb = null;                                  // set: the channel list picks a channel instead of opening its editor
   function editObjectDialog() {
-    const o = smallDialog(1000, 720, 'Edit Object', 80);
-    const p = selObjs()[selObjs().length - 1];
-    keyRow(o, 190, 'Z Layer:', '24', p && typeof defaultZLayer === 'function' ? defaultZLayer(p.id) : 0, -5, 11);
-    keyRow(o, 280, 'Z Order:', '25', 0, -100, 100);
-    keyRow(o, 370, 'Main colour:', '21', 0, 0, 999);
-    keyRow(o, 460, 'Detail colour:', '22', 0, 0, 999);
-    keyRow(o, 550, 'Editor layer:', '20', 0, 0, 9999);
-    nbtn(root, 'GJ_button_01', null, o(500, 650, 190, 90), close, 'OK', 'gold', 60);
+    const o = smallDialog(1000, 860, 'Edit Object', 80);
+    const p = lastSel(); if (!p) return close();
+    EO_TABS.forEach((t, i) => nbtn(root, i === eoTab ? 'GJ_button_02' : 'GJ_button_04', null, o(130 + i * 247, 175, 235, 76), () => { eoTab = i; open(current); }, t, 'gold', 40));
+    if (eoTab === 0) {
+      propRow(o, 300, 'X:', () => p.x, (ob, d) => { ob.x += d; }, 1);
+      propRow(o, 390, 'Y:', () => p.y, (ob, d) => { ob.y += d; }, 1);
+      propRow(o, 480, 'Rotation:', () => Math.round(((p.rot % 360) + 360) % 360 * 100) / 100, (ob, d) => { ob.rot = ((ob.rot + d) % 360 + 360) % 360; }, 15);
+      propRow(o, 570, 'Scale X:', () => Math.round(p.sx * 1000) / 1000, (ob, d, v) => { ob.sx = Math.max(0.05, ob.sx + d); ob.scaleDirty = true; }, 0.1);
+      propRow(o, 660, 'Scale Y:', () => Math.round(p.sy * 1000) / 1000, (ob, d, v) => { ob.sy = Math.max(0.05, ob.sy + d); ob.scaleDirty = true; }, 0.1);
+      nbtn(root, p.flipX ? 'GJ_button_02' : 'GJ_button_04', null, o(250, 750, 330, 80), () => { pushOp(opProps(selObjs(), ob => { ob.flipX = !ob.flipX; }, 'flip')); open(current); }, 'Flip X', 'gold', 46);
+      nbtn(root, p.flipY ? 'GJ_button_02' : 'GJ_button_04', null, o(620, 750, 330, 80), () => { pushOp(opProps(selObjs(), ob => { ob.flipY = !ob.flipY; }, 'flip')); open(current); }, 'Flip Y', 'gold', 46);
+    } else if (eoTab === 1) {
+      const chRow = (y, label, key) => {
+        keyRow(o, y, label, key, 0, 0, 1014);
+        const id = rawNumOf(p, key, 0), c = id > 0 && level.channels.get(id);
+        const sw = mk('div', 'a', root); put(sw, o(940, y, 60, 60));
+        sw.style.cssText += `;background:${c ? `rgb(${c.r},${c.g},${c.b})` : 'transparent'};border:calc(4*var(--k)) solid #000;border-radius:calc(8*var(--k));box-sizing:border-box;pointer-events:none`;
+        nbtn(root, 'GJ_button_01', null, o(250, y + 70, 220, 60), () => { pickCb = v => A.editRaw(selObjs(), ob => A.setKey(ob, key, v), label); chPage = 0; openOver(colorsDialog); }, 'Pick...', 'gold', 40);
+        nbtn(root, 'GJ_button_06', null, o(500, y + 70, 220, 60), () => { if (id > 0) openOver(() => chanDialog(id)); }, 'Edit', 'gold', 40);
+      };
+      chRow(290, 'Main colour:', '21');
+      chRow(500, 'Detail colour:', '22');
+      txt(root, 'big', '0 = the object\'s default channel', 34, o(500, 700, 900, 50));
+    } else if (eoTab === 2) {
+      groupBody(o, 320);
+    } else {
+      const cur = rawNumOf(p, '24', typeof defaultZLayer === 'function' ? defaultZLayer(p.id) : 3);
+      Z_LAYERS.forEach(([n, v], i) => nbtn(root, v === cur ? 'GJ_button_02' : 'GJ_button_04', null, o(100 + i * 100, 300, 92, 76), () => { A.editRaw(selObjs(), ob => A.setKey(ob, '24', v), 'z layer'); open(current); }, n, 'big', 36));
+      keyRow(o, 410, 'Z Order:', '25', 0, -100, 100);
+      keyRow(o, 500, 'Editor L1:', '20', 0, 0, 9999);
+      keyRow(o, 590, 'Editor L2:', '61', 0, 0, 9999);
+    }
+    nbtn(root, 'GJ_button_01', null, o(500, 780, 190, 90), close, 'OK', 'gold', 60);
   }
 
   // Edit Special: the settings of a trigger. Keys are the ones the exe reads for these triggers (see the key table); labels follow the game's popups.
@@ -5208,7 +5244,7 @@ function goptOverlay() {
     const o = smallDialog(1560, 900, 'Colour Channels', 80);
     ids.slice(chPage * per, chPage * per + per).forEach((id, i) => {
       const x = 150 + (i % 6) * 252, y = 215 + Math.floor(i / 6) * 120, c = level.channels.get(id);
-      nbtn(root, 'GJ_button_04', null, o(x, y, 236, 104), () => openOver(() => chanDialog(id)), '', 'big', 30);
+      nbtn(root, 'GJ_button_04', null, o(x, y, 236, 104), () => { if (pickCb) { const f = pickCb; pickCb = null; f(id); back(); } else openOver(() => chanDialog(id)); }, '', 'big', 30);
       const sw = mk('div', 'a', root); put(sw, o(x - 78, y, 62, 62));
       sw.style.cssText += `;background:rgb(${c ? c.r : 255},${c ? c.g : 255},${c ? c.b : 255});border:calc(4*var(--k)) solid #000;border-radius:calc(8*var(--k));box-sizing:border-box;pointer-events:none;opacity:${c ? Math.max(.25, c.a) : 1}`;
       txt(root, 'big', chName(id), 32, o(x + 28, y, 140, 50));
@@ -5217,7 +5253,7 @@ function goptOverlay() {
     txt(root, 'gold', (chPage + 1) + ' / ' + pages, 46, o(430, 830, 200, 70));
     nbtn(root, 'GJ_button_04', null, o(680, 830, 120, 80), () => { chPage = (chPage + 1) % pages; open(colorsDialog); }, '>', 'big', 56);
     nbtn(root, 'GJ_button_01', null, o(1000, 830, 300, 90), () => openOver(addChannelDialog), 'New channel', 'gold', 46);
-    nbtn(root, 'GJ_button_01', null, o(1360, 830, 190, 90), close, 'OK', 'gold', 60);
+    nbtn(root, 'GJ_button_01', null, o(1360, 830, 190, 90), () => { if (pickCb) { pickCb = null; back(); } else close(); }, pickCb ? 'Cancel' : 'OK', 'gold', 60);
   }
   function addChannelDialog() {
     const o = smallDialog(1000, 420, 'New Channel', 80);
