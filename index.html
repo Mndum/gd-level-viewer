@@ -1229,17 +1229,14 @@ $('assets').onchange = async e => {
   } catch (err) { showError(err); }
 };
 
-// ---------- song: played from your copy (the game's own download folder) if present, else streamed via the worker ----------
-// The game keeps every song it downloads as <songID>.mp3/.ogg in %LOCALAPPDATA%\GeometryDash. The page reads it
-// from there (folder chosen once), or from a file you load. Without a local copy it streams from the worker's
-// /audio/<id> endpoint, which relays the Newgrounds file.
-const DEFAULT_SONG_SERVICE = 'https://gd-song-service.monochromdum.workers.dev';   // song info + audio relay
+// ---------- song: played from YOUR copy (the game's own download folder), never streamed from Newgrounds ----------
+// Newgrounds blocks hotlinking, and the game itself keeps every song it downloads as <songID>.mp3/.ogg in
+// %LOCALAPPDATA%\GeometryDash. The page reads it from there (folder chosen once), or from a file you load.
+const DEFAULT_SONG_SERVICE = 'https://gd-song-service.monochromdum.workers.dev';   // name/artist lookup only
 const SERVICE_KEY = 'gd-level-viewer.songService';
 const song = { id: 0, audio: null, fileUrl: null, info: null, token: 0, label: '' };
 let songFolder = null;                       // handle to the game's save folder
-// strips trailing slashes and an accidental /audio, /info or /level, so a pasted endpoint still works
-function cleanServiceUrl(u) { return String(u || '').trim().replace(/\/+$/, '').replace(/\/(audio|info|level)(\/\d*)?$/i, '').replace(/\/+$/, ''); }
-function songService() { try { return cleanServiceUrl(localStorage.getItem(SERVICE_KEY) || DEFAULT_SONG_SERVICE) || DEFAULT_SONG_SERVICE; } catch (e) { return DEFAULT_SONG_SERVICE; } }
+function songService() { try { return (localStorage.getItem(SERVICE_KEY) || DEFAULT_SONG_SERVICE).replace(/\/+$/, ''); } catch (e) { return DEFAULT_SONG_SERVICE; } }
 function setSongStatus(t) { $('songStatus').textContent = t; }
 function setSongLink(id) {
   let a = $('songLink');
@@ -1314,9 +1311,11 @@ async function loadSong(id) {
     attachAudio(song.fileUrl, (info && info.name) || file.name);
     setSongStatus(`ready: ${nice} (from your game folder) - press the music button to play`);
   } else {
-    // no local copy: stream it through the Cloudflare worker's /audio proxy (it adds the Referer Newgrounds wants)
-    attachAudio((info && info.stream) || `${songService()}/audio/${id}`, (info && info.name) || ('Song ' + id));
-    setSongStatus(`ready: ${nice} (streaming) - press the music button to play`);
+    song.label = (info && info.name) || ('Song ' + id);
+    updateSongChip();
+    setSongStatus(songFolder
+      ? `${nice} is not in your game folder yet. Open the level once in Geometry Dash so it downloads the song, or load the audio file yourself.`
+      : `${nice}. Choose your Geometry Dash save folder below so the page can play it, or load the audio file yourself.`);
   }
 }
 function toggleSong() {
@@ -1877,6 +1876,30 @@ const TL_PORTAL_SPEED = { 200: 251.16, 201: 311.58, 202: 387.42, 203: 468.0, 133
 const LEGACY_COLOR = { 29: 1000, 30: 1001, 104: 1002, 105: 1004, 221: 1, 717: 2, 718: 3, 743: 4, 900: 1003, 915: 1009 };
 const CHAN_NAMES = { 1000: 'BG', 1001: 'Ground', 1002: 'Line', 1003: '3DL', 1004: 'Object', 1005: 'Player 1', 1006: 'Player 2',
   1007: 'Light BG', 1009: 'Ground 2', 1010: 'Black', 1011: 'White' };
+// what the other triggers do, in the editor guide's terms (only IDs known for certain)
+const TRIGGER_INFO = {
+  1268: ['Spawn', 'fires the triggers in its Group ID, after an optional delay; can remap Group IDs'],
+  1346: ['Rotate', 'rotates its target group around a centre group (degrees, x360, easing)'],
+  2067: ['Scale', 'scales its target group around a centre group over a duration'],
+  2899: ['Options', 'changes player/UI options such as hiding the ground, hiding players or disabling controls'],
+  1595: ['Touch', 'toggles its Group ID when the player taps (Hold Mode, Toggle On/Off)'],
+  1611: ['Count', 'acts on its target when an Item ID reaches the target count (Activate Group off = disable)'],
+  1811: ['Instant Count', 'checks an Item ID once when it fires, then enables/disables or spawns its target'],
+  1812: ['On Death', 'toggles or spawns its Group ID when the player dies'],
+  1815: ['Collision', 'toggles or spawns its target while two Collision Blocks overlap'],
+  1817: ['Pickup', 'changes an Item ID (add, override, multiply or divide)'],
+  1912: ['Random', 'spawns one of two groups by percentage chance'],
+  1913: ['Zoom', 'zooms the camera (1.0 is normal) over a time with easing'],
+  1914: ['Static Camera', 'locks the camera to a single-object Group ID'],
+  1916: ['Camera Offset', 'offsets the camera (10 units = 1 block) over a time'],
+  1917: ['Reverse', 'reverses the player direction (Classic only)'],
+  1585: ['Animate', 'plays an animation on its animated-object Group ID'],
+  1520: ['Shake', 'shakes the screen (strength, interval, duration)'],
+  1347: ['Follow', 'makes its target group copy another group\'s movement, scaled by X/Y Mod'],
+  1616: ['Stop', 'stops, pauses or resumes the triggers in its Group ID'],
+  1932: ['Player Control', 'stops jumping, movement, rotation or sliding for P1/P2'],
+  3600: ['End', 'the level end point; pulls the player to it']
+};
 const chanName = id => CHAN_NAMES[id] || ('Colour ' + id);
 const rawNum = (o, k, d) => {
   const v = o.raw ? o.raw[k] : undefined;
@@ -1917,6 +1940,8 @@ function describeTrigger(o) {
       `in ${rawNum(o, '45', 0)}s, hold ${rawNum(o, '46', 0)}s, out ${rawNum(o, '47', 0)}s${tail} [not simulated]`;
     case 1268: return `Spawn trigger: group ${g}, delay ${rawNum(o, '63', 0)}s${tail} [not simulated]`;
   }
+  const info = TRIGGER_INFO[o.id];
+  if (info) return `${info[0]} trigger: ${info[1]}${tail} [not simulated]`;
   const nm = (ID_FRAMES[o.id] || '').replace(/_001\.png$/, '').replace(/^edit_e|Btn$/g, '');
   return `Trigger ${o.id}${nm ? ' (' + nm + ')' : ''}${tail} [not simulated]`;
 }
