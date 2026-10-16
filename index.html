@@ -610,7 +610,7 @@ function drawSprite(o, sx, sy, dim) {
     if (ximg) paintSprite(ximg, xf, o, sx, sy, dim);
   }
   if (name.endsWith('_001.png') && !name.includes('_color_')) {
-    const df = atlas.frames.get(name.replace('_001.png', '_color_001.png'));
+    const df = (typeof DETAIL_SKIP !== 'undefined' && DETAIL_SKIP.has(o.id)) ? null : atlas.frames.get(name.replace('_001.png', '_color_001.png'));
     if (df) {
       const dimg = tintedFrame(df, channelHexP(o.col2 || defaultColFor(o), 'detail'));
       if (dimg) paintSprite(dimg, df, o, sx, sy, dim);
@@ -3054,7 +3054,11 @@ paintSprite = function (img, fi, o, sx, sy, dim) {
 // ---- the extra sprites many objects are built from (decoded from GameObject::customSetup in the exe) ----
 // assets/children.json: id -> [[frame, offsetX, offsetY, z, rotation, additive], ...]. A negative z is drawn behind the object's own sprite.
 let CHILD = {};
-fetch('assets/children.json').then(r => r.json()).then(j => { CHILD = j; if (typeof draw === 'function') draw(); }).catch(() => { });
+// decoded by hand from the exe where the table builder did not follow a call: a colour sprite added with a rotation (z -2) on the Single Beveled Slopes;
+// the Hollow Industrial Slope Fillers are only their two small bgcolor pieces (no slope sprite)
+const DETAIL_SKIP = new Set([895, 896]);
+const CHILD_FIX = { 895: [['block009c_slope_01_color_001.png', 0, 0, -2, -45, 0]], 896: [['block009c_slope_02_color_001.png', 0, 0, -2, -30, 0]] };
+fetch('assets/children.json').then(r => r.json()).then(j => { CHILD = Object.assign(j, CHILD_FIX); ID_FRAMES[1108] = 'block007_bgcolor_010_001.png'; if (typeof draw === 'function') draw(); }).catch(() => { });
 function drawChildren(o, sx, sy, dim, phase) {
   const list = CHILD[o.id];
   if (!list) return;
