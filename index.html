@@ -502,10 +502,18 @@ async function loadAssets(fileList) {
       if (files.has(base + '.plist') && files.has(base + '.png')) { pick = { base, q }; break; }
     }
     if (!pick) continue;
-    const text = await files.get(pick.base + '.plist').text();
+    const pf = files.get(pick.base + '.plist');
     const Q = pick.q === 'uhd' ? 4 : pick.q === 'hd' ? 2 : 1;
     const sheet = { file: files.get(pick.base + '.png'), bitmap: null, loading: false, Q };
-    if (parseAtlasPlist(text, sheet, wanted) > 0) {
+    let added = 0;
+    if (pf.frames) {                                  // the page's own pre-parsed table (assets/atlas-*.json): no plist to download or parse
+      for (const [name, a] of Object.entries(pf.frames)) {
+        if (!wanted.has(name) || atlas.frames.has(name)) continue;
+        atlas.frames.set(name, { name, x: a[0], y: a[1], w: a[2], h: a[3], rotated: !!a[4], ox: a[5], oy: a[6], sheet });
+        added++;
+      }
+    } else added = parseAtlasPlist(await pf.text(), sheet, wanted);
+    if (added > 0) {
       sheets++;
       const k = pick.q ? pick.q.toUpperCase() : 'SD';
       atlas.used[k] = (atlas.used[k] || 0) + 1;
@@ -968,7 +976,7 @@ async function loadFromText(raw, name) {
   document.title = (meta.k2 || name) + ' - Level Viewer';
   renderSide(name);
   // wait for layout (the side panel changes the stage width) before measuring the canvas
-  await new Promise(r => setTimeout(r, 80));   // let layout settle (works in background tabs too)
+  await new Promise(r => { let d = false; const go = () => { if (!d) { d = true; r(); } }; requestAnimationFrame(go); setTimeout(go, 40); });   // one frame for layout to settle (the timer covers background tabs)
   resize();
   fit();
 }
@@ -1168,10 +1176,13 @@ function applyBitmapLabels() {
     el.innerHTML = `<img class="bm" alt="${esc2(el.dataset.bm)}" src="${bmDataURL(el.dataset.bm, h)}" style="height:${h}px">`;
   });
 }
+const uiSpriteURL = new Map();          // frame name -> data URL, so a frame is turned into a picture once, not on every refresh
 function applyUiSprites() {
   document.querySelectorAll('img[data-frame]').forEach(img => {
     const fi = atlas.frames.get(img.dataset.frame);
     if (!fi) return;
+    const cached = uiSpriteURL.get(img.dataset.frame + '|' + (fi.sheet && fi.sheet.Q));
+    if (cached) { if (img.src !== cached) img.src = cached; img.parentElement.classList.add('hasimg'); return; }
     const c = tintedFrame(fi, 'ffffff');
     if (!c) return;
     const out = document.createElement('canvas');
@@ -1183,6 +1194,7 @@ function applyUiSprites() {
     const dw = fi.rotated ? H : W, dh = fi.rotated ? W : H;
     g.drawImage(c, -dw / 2, -dh / 2, dw, dh);
     img.src = out.toDataURL('image/png');
+    uiSpriteURL.set(img.dataset.frame + '|' + (fi.sheet && fi.sheet.Q), img.src);
     img.parentElement.classList.add('hasimg');
   });
 }
@@ -1438,7 +1450,10 @@ async function loadAssetsFromSite() {
   setAssetStatus(`downloading ${assetQuality.toUpperCase()} sprites…`);
   try {
     // every sheet is fetched at the same time; only the small description files come now, the big pictures are fetched when first drawn from
+    let table = null;
+    for (const q of qs) { try { const r = await fetch(`assets/atlas-${q}.json`); if (r.ok) { table = { q, data: await r.json() }; break; } } catch (e) { /* fall back to the plists */ } }
     const got = await Promise.all([...SHEET_STEMS, 'bigFont'].map(async stem => {
+      if (table && stem !== 'bigFont' && table.data[stem]) return [{ name: `${stem}-${table.q}.plist`, frames: table.data[stem] }, { name: `${stem}-${table.q}.png`, lazyUrl: `assets/${stem}-${table.q}.png` }];
       const ext = stem === 'bigFont' ? 'fnt' : 'plist';
       for (const q of qs) {
         const base = `${stem}-${q}`;
