@@ -36,7 +36,7 @@ Newgrounds does not allow other sites to stream its audio, so this page never do
   You can run your own copy and change the address in Menu → Song.
 ## What is and isn't in this repository
 
-- ssets/ contains Geometry Dash's sprite sheets and fonts, included with RobTop Games' permission.
+- `assets/` contains Geometry Dash's sprite sheets and fonts, included with RobTop Games' permission.
   No audio or shader code from the game is included.
 - `index.html` includes a table that maps object IDs to sprite file names, which is how the page
   knows which sprite to draw for an object.

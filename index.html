@@ -227,7 +227,7 @@
           <label class="chk"><input id="tGrid" type="checkbox" checked> grid</label>
           <label class="chk"><input id="tDeco" type="checkbox" checked> decoration</label>
           <label class="chk"><input id="tTrig" type="checkbox" checked> triggers</label>
-          <label class="chk"><input id="tBg" type="checkbox"> level background colour</label>
+          <label class="chk"><input id="tBg" type="checkbox" checked> level background colour</label>
         </div>
         <div class="menuRow"><button class="gdbtn wide" id="fxToggle">Shader effects</button><button class="gdbtn wide green" id="fxGallery">Shader gallery</button></div>
       </div>
@@ -363,12 +363,15 @@ function parseLevel(levelStr) {
 
 // ---------- state ----------
 let level = null;
+let curGA = 1;                       // opacity of the group the object being drawn belongs to (timeline)
+function chan(id) { return level ? level.channels.get(id) : undefined; }   // replaced by the timeline
+function groupStateFor(o) { return null; }
 let meta = {};
 let srcDoc = null;          // the file the open level came from (used when saving)
 let view = { cx: 0, cy: 0, zoom: 0.5 };
 let highlight = null;      // object ID being highlighted
 let hover = null;
-const opt = { grid: true, deco: true, trig: true, bg: false };
+const opt = { grid: true, deco: true, trig: true, bg: true };
 
 function resize() {
   const r = canvas.parentElement.getBoundingClientRect();
@@ -535,7 +538,7 @@ function tintedFrame(fi, hex) {
   return c;
 }
 function channelHex(id) {
-  const ch = level.channels.get(id);
+  const ch = chan(id);
   if (!ch) return 'ffffff';
   const h = v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
   return h(ch.r) + h(ch.g) + h(ch.b);
@@ -550,7 +553,7 @@ function paintSprite(img, fi, o, sx, sy, dim) {
   ctx.scale(o.sx * k, o.sy * k);
   ctx.translate(fi.ox / Q, -fi.oy / Q);
   if (fi.rotated) ctx.rotate(-Math.PI / 2);
-  ctx.globalAlpha = dim ? 0.15 : 1;
+  ctx.globalAlpha = (dim ? 0.15 : 1) * curGA;
   const dw = fi.rotated ? H : W, dh = fi.rotated ? W : H;
   ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
   ctx.restore();
@@ -693,8 +696,9 @@ $('fxToggle').onclick = () => { const b = $('fxbar'); b.hidden = !b.hidden; resi
 
 // ---------- drawing ----------
 function colorFor(o, alpha) {
-  const ch = level.channels.get(o.col);
-  if (ch && o.cls !== 'spike') return `rgba(${ch.r},${ch.g},${ch.b},${alpha})`;
+  const ch = chan(o.col);
+  alpha = alpha * curGA;
+  if (ch && o.cls !== 'spike') return `rgba(${Math.round(ch.r)},${Math.round(ch.g)},${Math.round(ch.b)},${alpha})`;
   const hex = CLASS_COLOR[o.cls];
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${alpha})`;
@@ -707,10 +711,10 @@ function visible(o) {
 function draw() {
   const W = canvas._w, H = canvas._h;
   if (!W) return;
-  let bg = '#0d0f17';
+  let bg = '#0e2a63';
   if (opt.bg && level) {
-    const c = level.channels.get(1000);
-    if (c) bg = `rgb(${Math.round(c.r * 0.45)},${Math.round(c.g * 0.45)},${Math.round(c.b * 0.45)})`;
+    const c = chan(1000);                 // the level's own background colour (after any colour triggers)
+    if (c) bg = `rgb(${Math.round(c.r)},${Math.round(c.g)},${Math.round(c.b)})`;
   }
   ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
 
@@ -726,7 +730,13 @@ function draw() {
   }
   // ground line (y = 0) so the level's floor is obvious
   const [, gy] = toScreen(0, 0);
-  ctx.strokeStyle = 'rgba(61,220,151,.7)'; ctx.lineWidth = 2;
+  let lineCol = 'rgba(61,220,151,.7)';
+  if (opt.bg && level) {
+    const gc = chan(1001), lc = chan(1002);
+    if (gc && gy < H) { ctx.fillStyle = `rgb(${Math.round(gc.r)},${Math.round(gc.g)},${Math.round(gc.b)})`; ctx.fillRect(0, Math.max(0, gy), W, H - Math.max(0, gy)); }
+    if (lc) lineCol = `rgb(${Math.round(lc.r)},${Math.round(lc.g)},${Math.round(lc.b)})`;
+  }
+  ctx.strokeStyle = lineCol; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
 
   if (!level) return;
@@ -770,7 +780,10 @@ function draw() {
   applyEffects();
 }
 function drawObject(o, dim) {
-  const [sx, sy] = toScreen(o.x, o.y);
+  const gs = groupStateFor(o);
+  if (gs && gs.hidden) return;
+  curGA = gs ? gs.alpha : 1;
+  const [sx, sy] = toScreen(o.x + (gs ? gs.dx : 0), o.y + (gs ? gs.dy : 0));
   const w = 30 * o.sx * view.zoom, h = 30 * o.sy * view.zoom;
   const reach = Math.max(w, h);
   if (sx < -reach || sx > canvas._w + reach || sy < -reach || sy > canvas._h + reach) return;
@@ -1849,6 +1862,240 @@ loadFromText = async function (raw, name) {
 };
 addEventListener('beforeunload', e => { if (level && level.edited) { e.preventDefault(); e.returnValue = ''; } });
 updateEditUi();
+</script>
+
+<script>
+"use strict";
+// ================= triggers: plain-English descriptions + a position-based timeline =================
+// Simulated while you scrub/play: colour triggers (BG, ground, object and numbered channels),
+// move, alpha and toggle triggers. Other trigger types are described but not simulated.
+// Touch- and spawn-triggered triggers are not tied to a position, so they are described only.
+const TL_START_SPEED = { 0: 311.58, 1: 251.16, 2: 387.42, 3: 468.0, 4: 576.0 };      // header kA4: 1x, 0.5x, 2x, 3x, 4x (units/second)
+const TL_PORTAL_SPEED = { 200: 251.16, 201: 311.58, 202: 387.42, 203: 468.0, 1334: 576.0 };
+const LEGACY_COLOR = { 29: 1000, 30: 1001, 104: 1002, 105: 1004, 221: 1, 717: 2, 718: 3, 743: 4, 900: 1003, 915: 1009 };
+const CHAN_NAMES = { 1000: 'BG', 1001: 'Ground', 1002: 'Line', 1003: '3DL', 1004: 'Object', 1005: 'Player 1', 1006: 'Player 2',
+  1007: 'Light BG', 1009: 'Ground 2', 1010: 'Black', 1011: 'White' };
+const chanName = id => CHAN_NAMES[id] || ('Colour ' + id);
+const rawNum = (o, k, d) => {
+  const v = o.raw ? o.raw[k] : undefined;
+  if (v === undefined || v === '') return d;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+};
+const lerpN = (a, b, t) => a + (b - a) * t;
+
+function colorTriggerInfo(o) {
+  let chanId;
+  if (o.id === 899) chanId = rawNum(o, '23', 0);
+  else if (LEGACY_COLOR[o.id] !== undefined) chanId = LEGACY_COLOR[o.id];
+  else return null;
+  return { chan: chanId, r: rawNum(o, '7', 255), g: rawNum(o, '8', 255), b: rawNum(o, '9', 255),
+           a: rawNum(o, '35', 1), dur: rawNum(o, '10', 0) };
+}
+function triggerFlags(o) {
+  const f = [];
+  if (o.raw['11'] === '1') f.push('touch triggered');
+  if (o.raw['62'] === '1') f.push('spawn triggered');
+  if (o.raw['87'] === '1') f.push('multi trigger');
+  return f;
+}
+const SIMULATED = new Set([899, 29, 30, 104, 105, 221, 717, 718, 743, 900, 915, 901, 1007, 1049]);
+function describeTrigger(o) {
+  if (!o || o.cls !== 'trigger' || !o.raw) return null;
+  const flags = triggerFlags(o);
+  const tail = flags.length ? ' (' + flags.join(', ') + ')' : '';
+  const c = colorTriggerInfo(o);
+  if (c) return `Colour trigger: ${chanName(c.chan)} to rgb(${c.r}, ${c.g}, ${c.b}), opacity ${c.a}, fade ${c.dur}s${tail}`;
+  const g = rawNum(o, '51', 0), dur = rawNum(o, '10', 0);
+  switch (o.id) {
+    case 901: return `Move trigger: group ${g} by (${rawNum(o, '28', 0)}, ${rawNum(o, '29', 0)}) over ${dur}s${tail}`;
+    case 1007: return `Alpha trigger: group ${g} to opacity ${rawNum(o, '35', 1)} over ${dur}s${tail}`;
+    case 1049: return `Toggle trigger: group ${g} ${o.raw['56'] === '1' ? 'on' : 'off'}${tail}`;
+    case 1006: return `Pulse trigger: target ${g}, rgb(${rawNum(o, '7', 255)}, ${rawNum(o, '8', 255)}, ${rawNum(o, '9', 255)}), ` +
+      `in ${rawNum(o, '45', 0)}s, hold ${rawNum(o, '46', 0)}s, out ${rawNum(o, '47', 0)}s${tail} [not simulated]`;
+    case 1268: return `Spawn trigger: group ${g}, delay ${rawNum(o, '63', 0)}s${tail} [not simulated]`;
+  }
+  const nm = (ID_FRAMES[o.id] || '').replace(/_001\.png$/, '').replace(/^edit_e|Btn$/g, '');
+  return `Trigger ${o.id}${nm ? ' (' + nm + ')' : ''}${tail} [not simulated]`;
+}
+
+// ---------- timeline model ----------
+const tl = { on: true, dirty: true, model: null, cacheX: null, cache: null, timer: 0 };
+function levelStartSpeed() {
+  const m = /(?:^|,)kA4,(\d+)/.exec(level.header || '');
+  return TL_START_SPEED[m ? Number(m[1]) : 0] || 311.58;
+}
+function buildTimeline() {
+  // speed profile: the player's speed along x (start speed + speed portals), so x maps to time
+  const pts = level.objs.filter(o => TL_PORTAL_SPEED[o.id]).map(o => ({ x: o.x, v: TL_PORTAL_SPEED[o.id] })).sort((a, b) => a.x - b.x);
+  const segs = [{ x0: 0, t0: 0, v: levelStartSpeed() }];
+  for (const p of pts) {
+    const last = segs[segs.length - 1];
+    if (p.x <= last.x0) { last.v = p.v; continue; }
+    segs.push({ x0: p.x, t0: last.t0 + (p.x - last.x0) / last.v, v: p.v });
+  }
+  const segAt = X => { let s = segs[0]; for (const g of segs) { if (g.x0 <= X) s = g; else break; } return s; };
+  const tOf = X => { if (X <= 0) return 0; const s = segAt(X); return s.t0 + (X - s.x0) / s.v; };
+  const speedAt = X => segAt(X).v;
+
+  const chanEv = new Map(), moveEv = new Map(), alphaEv = new Map(), toggleEv = new Map();
+  const push = (map, key, ev) => { if (!map.has(key)) map.set(key, []); map.get(key).push(ev); };
+  for (const o of level.objs) {
+    if (o.cls !== 'trigger' || !o.raw) continue;
+    if (o.raw['11'] === '1' || o.raw['62'] === '1') continue;      // touch / spawn triggered: not tied to a position
+    const t0 = tOf(o.x);
+    const c = colorTriggerInfo(o);
+    if (c) { push(chanEv, c.chan, { t: t0, r: c.r, g: c.g, b: c.b, a: c.a, dur: c.dur }); continue; }
+    const g = rawNum(o, '51', 0);
+    if (o.id === 901) push(moveEv, g, { t: t0, dx: rawNum(o, '28', 0), dy: rawNum(o, '29', 0), dur: rawNum(o, '10', 0) });
+    else if (o.id === 1007) push(alphaEv, g, { t: t0, a: rawNum(o, '35', 1), dur: rawNum(o, '10', 0) });
+    else if (o.id === 1049) push(toggleEv, g, { t: t0, on: o.raw['56'] === '1' });
+  }
+  for (const m of [chanEv, moveEv, alphaEv, toggleEv]) for (const arr of m.values()) arr.sort((a, b) => a.t - b.t);
+  const maxX = Math.max(600, ...level.objs.map(o => o.x)) + 300;
+  return { tOf, speedAt, chanEv, moveEv, alphaEv, toggleEv, maxX };
+}
+function timelineModel() {
+  if (tl.dirty || !tl.model) { tl.model = buildTimeline(); tl.dirty = false; tl.cacheX = null; }
+  return tl.model;
+}
+function stateAt(X) {
+  if (tl.cache && tl.cacheX === X) return tl.cache;
+  const m = timelineModel(), T = m.tOf(X);
+  const channels = new Map();
+  for (const [id, evs] of m.chanEv) {
+    const base = level.channels.get(id) || { r: 255, g: 255, b: 255, a: 1 };
+    let cur = { r: base.r, g: base.g, b: base.b, a: base.a === undefined ? 1 : base.a };
+    for (const ev of evs) {
+      if (ev.t > T) break;
+      const p = ev.dur > 0 ? Math.min(1, (T - ev.t) / ev.dur) : 1;
+      cur = { r: lerpN(cur.r, ev.r, p), g: lerpN(cur.g, ev.g, p), b: lerpN(cur.b, ev.b, p), a: lerpN(cur.a, ev.a, p) };
+      if (p < 1) break;                                   // mid-fade: later triggers have not started yet
+    }
+    channels.set(id, cur);
+  }
+  const groups = new Map();
+  const ids = new Set([...m.moveEv.keys(), ...m.alphaEv.keys(), ...m.toggleEv.keys()]);
+  for (const g of ids) {
+    let dx = 0, dy = 0;
+    for (const ev of (m.moveEv.get(g) || [])) {
+      if (ev.t > T) break;
+      const p = ev.dur > 0 ? Math.min(1, (T - ev.t) / ev.dur) : 1;
+      dx += ev.dx * p; dy += ev.dy * p;
+    }
+    let alpha = 1;
+    for (const ev of (m.alphaEv.get(g) || [])) {
+      if (ev.t > T) break;
+      const p = ev.dur > 0 ? Math.min(1, (T - ev.t) / ev.dur) : 1;
+      alpha = lerpN(alpha, ev.a, p);
+      if (p < 1) break;
+    }
+    let hidden = false;
+    for (const ev of (m.toggleEv.get(g) || [])) { if (ev.t > T) break; hidden = !ev.on; }
+    groups.set(g, { dx, dy, alpha, hidden });
+  }
+  tl.cacheX = X; tl.cache = { T, channels, groups };
+  return tl.cache;
+}
+
+// the hooks the drawing code calls
+chan = function (id) {
+  if (!level) return undefined;
+  if (!tl.on) return level.channels.get(id);
+  return stateAt(view.cx).channels.get(id) || level.channels.get(id);
+};
+groupStateFor = function (o) {
+  if (!tl.on || !level || !o.groups) return null;
+  const st = stateAt(view.cx).groups;
+  if (!st.size) return null;
+  let dx = 0, dy = 0, alpha = 1, hidden = false, any = false;
+  for (const part of o.groups.split('.')) {
+    const g = st.get(Number(part));
+    if (!g) continue;
+    any = true; dx += g.dx; dy += g.dy; alpha *= g.alpha; hidden = hidden || g.hidden;
+  }
+  return any ? { dx, dy, alpha, hidden } : null;
+};
+
+// ---------- tooltip and Edit tab show what a trigger does ----------
+const _updateHoverTrig = updateHover;
+updateHover = function (sx, sy) {
+  _updateHoverTrig(sx, sy);
+  const best = hover, tip = $('tip');
+  const d = best && describeTrigger(best);
+  if (d && tip.style.display !== 'none') tip.textContent = tip.textContent + '\n' + d;
+};
+const _renderEditTrig = renderEdit;
+renderEdit = function () {
+  _renderEditTrig();
+  const o = view.selected, d = o && describeTrigger(o);
+  if (d) {
+    const sim = SIMULATED.has(o.id) && !triggerFlags(o).some(f => f !== 'multi trigger');
+    $('editInfo').insertAdjacentHTML('afterbegin',
+      `<div class="small" style="margin-bottom:8px;padding:8px 10px;border-radius:8px;background:rgba(0,0,0,.3)">${esc2(d)}` +
+      `${sim ? '<br><span style="color:var(--green1)">Simulated by the timeline below.</span>' : ''}</div>`);
+  }
+};
+
+// anything that changes the objects invalidates the timeline
+const _afterEditTl = afterEdit;
+afterEdit = function (structural) { tl.dirty = true; _afterEditTl(structural); };
+const _loadFromTextTl = loadFromText;
+loadFromText = async function (raw, name) {
+  tl.dirty = true; tl.cacheX = null;
+  await _loadFromTextTl(raw, name);
+  tl.dirty = true; tl.cacheX = null;
+  syncTimeline(true);
+  draw();
+};
+
+// ---------- timeline bar ----------
+(function buildBar() {
+  const css = document.createElement('style');
+  css.textContent =
+    '#timeline{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);z-index:3;display:flex;gap:8px;align-items:center;' +
+    'padding:6px 10px;border:3px solid var(--edge);border-radius:12px;background:rgba(16,25,47,.88);width:min(640px,calc(100% - 180px))}' +
+    '#timeline input[type=range]{flex:1;min-width:80px}#tlText{white-space:nowrap;min-width:150px}' +
+    '@media (max-width:760px){#timeline{width:calc(100% - 100px);left:calc(50% + 30px)}#tlText{min-width:0}}';
+  document.head.appendChild(css);
+  const bar = document.createElement('div');
+  bar.id = 'timeline';
+  bar.innerHTML =
+    '<button class="mini" id="tlPlay" title="Play through the level at its normal speed">&#9654;</button>' +
+    '<input type="range" id="tlRange" min="0" max="1000" step="1" value="0" title="Move through the level: colour, move, alpha and toggle triggers take effect">' +
+    '<span class="small" id="tlText"></span>' +
+    '<label class="small" style="white-space:nowrap"><input type="checkbox" id="tlOn" checked> triggers</label>';
+  $('stage').appendChild(bar);
+  $('pos').style.bottom = '58px';
+  $('tlRange').addEventListener('input', e => { view.cx = Number(e.target.value); draw(); });
+  $('tlOn').onchange = e => { tl.on = e.target.checked; tl.cacheX = null; draw(); };
+  $('tlPlay').onclick = () => {
+    if (tl.timer) { clearInterval(tl.timer); tl.timer = 0; $('tlPlay').innerHTML = '&#9654;'; return; }
+    if (!level) return;
+    const m = timelineModel();
+    if (view.cx >= m.maxX - 5) view.cx = 0;
+    $('tlPlay').innerHTML = '&#10074;&#10074;';
+    let last = performance.now();
+    tl.timer = setInterval(() => {
+      const now = performance.now(), dt = Math.min(0.1, (now - last) / 1000); last = now;
+      const mm = timelineModel();
+      view.cx += mm.speedAt(view.cx) * dt;
+      if (view.cx >= mm.maxX) { view.cx = mm.maxX; clearInterval(tl.timer); tl.timer = 0; $('tlPlay').innerHTML = '&#9654;'; }
+      draw();
+    }, 33);
+  };
+})();
+function syncTimeline(force) {
+  if (!level) return;
+  const m = timelineModel(), r = $('tlRange');
+  if (Number(r.max) !== Math.round(m.maxX) || force) r.max = String(Math.round(m.maxX));
+  if (document.activeElement !== r) r.value = String(Math.max(0, Math.min(m.maxX, Math.round(view.cx))));
+  const T = m.tOf(Math.max(0, view.cx));
+  const nTrig = level.objs.reduce((n, o) => n + (o.cls === 'trigger' ? 1 : 0), 0);
+  $('tlText').textContent = `x ${Math.round(view.cx)} · ${T.toFixed(1)} s · ${nTrig} triggers`;
+}
+const _drawTl = draw;
+draw = function () { _drawTl(); try { syncTimeline(false); } catch (e) { /* the bar is cosmetic */ } };
 </script>
 <script>
 "use strict";
