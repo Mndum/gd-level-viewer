@@ -3133,7 +3133,7 @@ window.play = {
   active: false, dead: 0, attempt: 0, x: -30, ym: 15, lym: 15, yv: 0, g: 1, onGround: true, boosted: false, rot: 0,
   hold: false, press: false, world: null, raf: 0, last: 0, camY: 85, best: 0, done: 0, touched: new Set(), orbUsed: new Set(), icon: null,
   isOnSlope: false, wasOnSlope: false, slopeVel: 0, slopeRot: 0, shown: 0,
-  mode: 'cube', mini: false, floorY: 0, ceilY: null, boostT: 9, robotUp: false, spin: 0
+  mode: 'cube', mini: false, floorY: 0, ceilY: null, boostT: 9, robotUp: false, spin: 0, practice: false, cps: []
 };
 const PLAYER = { half: 15, small: 4.5, snap: 10, maxFall: 15, startX: -30 };
 const VEH_G = 0.958199;                                            // gravity constant of every vehicle (rdata 0x830a1c)
@@ -3278,6 +3278,17 @@ function setSection(mode, py) {
   if (CEILING_MODES.has(mode)) { p.floorY = Math.max(0, Math.round((py - 150) / 30) * 30); p.ceilY = p.floorY + 300; }
   else { p.floorY = 0; p.ceilY = null; }
 }
+// ---- practice mode: checkpoints keep the whole player state; dying restarts from the last one (Z places one, X removes the last, P toggles practice) ----
+const CP_FIELDS = ['x', 'ym', 'lym', 'yv', 'g', 'onGround', 'boosted', 'rot', 'mode', 'mini', 'floorY', 'ceilY', 'boostT', 'robotUp', 'ballBuf', 'isOnSlope', 'wasOnSlope', 'slopeVel', 'slopeRot', 'camY', 'spin'];
+function cpSnap() { const p = play, s = { orbUsed: new Set(p.orbUsed), touched: new Set(p.touched) }; for (const k of CP_FIELDS) s[k] = p[k]; return s; }
+function cpRestore(s) { const p = play; for (const k of CP_FIELDS) p[k] = s[k]; p.orbUsed = new Set(s.orbUsed); p.touched = new Set(s.touched); }
+function cpPlace() { const p = play; if (p.practice && p.active && !p.dead && !p.done) p.cps.push(cpSnap()); }
+function cpRemove() { const p = play; if (p.practice) p.cps.pop(); }
+function setPractice(on) {
+  const p = play; p.practice = !!on; if (!on) p.cps = [];
+  const b = document.getElementById('plPrac'); if (b) b.style.filter = on ? 'hue-rotate(80deg) brightness(1.2)' : '';
+  if (typeof draw === 'function') draw();
+}
 function playReset() {
   const p = play, s = startState();
   p.mode = s.mode; p.mini = s.mini; p.g = 1; setSection(p.mode, 105);
@@ -3286,6 +3297,7 @@ function playReset() {
   p.isOnSlope = p.wasOnSlope = false; p.slopeVel = 0; p.slopeRot = 0; p.boostT = 9; p.robotUp = false; p.ballBuf = false;
   if (s.flip && p.ceilY != null) { p.g = -1; p.ym = -(p.ceilY - playHalf()); p.lym = p.ym; }
   p.camY = p.ceilY != null ? p.floorY + 150 : 85;
+  if (p.practice && p.cps.length) cpRestore(p.cps[p.cps.length - 1]);
 }
 function hitGround() { play.onGround = true; play.boosted = false; play.yv = 0; }
 function boost(v) { const p = play; p.boosted = p.mode === 'cube'; p.onGround = false; p.robotUp = false; p.yv = v; }
@@ -3570,8 +3582,8 @@ function playUpdate(delta) {
     const spd = m.speedAt(Math.max(0, p.x));
     playStep(dtF, spd, physFor(spd));
   }
-  if (p.x > m.maxX) { p.done++; p.best = 100; playReset(); }
-  if (!p.dead) { p.press = false; p.best = Math.max(p.best, Math.min(100, Math.floor(Math.max(0, p.x) / m.maxX * 100))); }
+  if (p.x > m.maxX) { p.done++; if (p.practice) p.cps = []; else p.best = 100; playReset(); }
+  if (!p.dead) { p.press = false; if (!p.practice) p.best = Math.max(p.best, Math.min(100, Math.floor(Math.max(0, p.x) / m.maxX * 100))); }
   // camera follows the cube
   const W = canvas._w / view.zoom;
   view.cx = p.x + W * 0.2;
@@ -3656,6 +3668,11 @@ function drawSection() {
 function drawPlayer() {
   if (!play.active || !level) return;
   drawSection();
+  for (const c of play.cps) {                                       // practice checkpoints: green diamonds
+    const [cx, cy] = toScreen(c.x, c.g * c.ym), r = 11 * view.zoom;
+    ctx.save(); ctx.fillStyle = '#6bff3a'; ctx.strokeStyle = '#0b3a00'; ctx.lineWidth = Math.max(1.5, 2 * view.zoom);
+    ctx.beginPath(); ctx.moveTo(cx, cy - r); ctx.lineTo(cx + r, cy); ctx.lineTo(cx, cy + r); ctx.lineTo(cx - r, cy); ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.restore();
+  }
   const [sx, sy] = toScreen(play.x, play.g * play.ym);
   const k = view.zoom, mode = play.mode, mini = play.mini ? 0.6 : 1;
   ctx.save();
@@ -3696,13 +3713,13 @@ function hudUpdate() {
   if (!h) return;
   const pct = Math.min(100, Math.floor(Math.max(0, play.x) / timelineModel().maxX * 100));
   h.style.top = (window.shellApi ? shellApi.S.k * 175 : 70) + 'px';   // below the editor's top bar
-  h.textContent = `Attempt ${play.attempt}  ·  ${pct}%  ·  best ${play.best}%  ·  ${play.mode}${play.mini ? " (mini)" : ""}` + (play.done ? '  ·  level complete!' : '');
+  h.textContent = `Attempt ${play.attempt}  ·  ${pct}%  ·  ` + (play.practice ? `practice (${play.cps.length} checkpoint${play.cps.length === 1 ? '' : 's'}, Z place, X remove)` : `best ${play.best}%`) + `  ·  ${play.mode}${play.mini ? " (mini)" : ""}` + (play.done ? '  ·  level complete!' : '');
 }
 async function startPlay() {
   if (!level || play.active) return;
   if (tl.timer) { clearInterval(tl.timer); tl.timer = 0; $('tlPlay').innerHTML = '&#9654;'; }
   play.world = buildPlayWorld();
-  play.attempt = 0; play.best = 0; play.camY = 85; play.hold = false;
+  play.attempt = 0; play.best = 0; play.camY = 85; play.hold = false; play.cps = [];
   playReset();
   play.active = true; tl.cacheX = null;
   view.zoom = canvas._h / 320;
@@ -3728,6 +3745,11 @@ function stopPlay() {
   btn.title = 'Play this level as a cube (hold Space, Up or the mouse to jump; Esc to stop)';
   btn.onclick = () => (play.active ? stopPlay() : startPlay());
   bar.insertBefore(btn, bar.firstChild);
+  const pb = document.createElement('button');
+  pb.className = 'mini'; pb.id = 'plPrac'; pb.textContent = 'Practice'; pb.style.width = 'auto'; pb.style.padding = '0 10px';
+  pb.title = 'Practice mode: Z places a checkpoint, X removes the last one, dying restarts from the last checkpoint (P toggles)';
+  pb.onclick = () => setPractice(!play.practice);
+  btn.after(pb);
   const hud = document.createElement('div');
   hud.id = 'plHud'; hud.hidden = true;
   hud.style.cssText = 'position:absolute;top:13%;left:50%;transform:translateX(-50%);z-index:4;padding:6px 14px;border:3px solid var(--edge);border-radius:12px;background:rgba(16,25,47,.88);font-size:16px';
@@ -3741,6 +3763,11 @@ function stopPlay() {
   addEventListener('keydown', e => {
     if (!play.active) return;
     if (e.code === 'Escape') { stopPlay(); return; }
+    if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (e.code === 'KeyP' && !e.repeat) { setPractice(!play.practice); return; }
+      if (e.code === 'KeyZ' && !e.repeat) { cpPlace(); return; }
+      if (e.code === 'KeyX' && !e.repeat) { cpRemove(); return; }
+    }
     if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') { e.preventDefault(); if (!e.repeat) down(); }
   });
   addEventListener('keyup', e => { if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') up(); });
