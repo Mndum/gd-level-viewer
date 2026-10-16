@@ -2669,8 +2669,9 @@ async function fetchAnyFile(names) {
 async function loadGjFont(id, key, f) {
   const stem = 'gjFont' + String(id).padStart(2, '0');
   try {
-    for (const q of (assetQuality === 'uhd' ? ['uhd', 'hd'] : ['hd', 'uhd'])) {
-      const fnt = await fetchAnyFile([`${stem}-${q}.fnt`]), png = fnt && await fetchAnyFile([`${stem}-${q}.png`]);
+    for (const q of (assetQuality === 'uhd' ? ['uhd', 'hd', ''] : ['hd', 'uhd', ''])) {          // '' = the plain standard-size files
+      const sfx = q ? '-' + q : '';
+      const fnt = await fetchAnyFile([`${stem}${sfx}.fnt`]), png = fnt && await fetchAnyFile([`${stem}${sfx}.png`]);
       if (!fnt || !png) continue;
       const txt = await fnt.text();
       const common = /common\s+lineHeight=(\d+)/.exec(txt);
@@ -2678,7 +2679,7 @@ async function loadGjFont(id, key, f) {
       const re = /char id=(\d+)\s+x=(\d+)\s+y=(\d+)\s+width=(\d+)\s+height=(\d+)\s+xoffset=(-?\d+)\s+yoffset=(-?\d+)\s+xadvance=(-?\d+)/g;
       let m;
       while ((m = re.exec(txt))) chars[+m[1]] = { x: +m[2], y: +m[3], w: +m[4], h: +m[5], xo: +m[6], yo: +m[7], xa: +m[8] };
-      f.chars = chars; f.lineH = common ? +common[1] : 60; f.Q = q === 'uhd' ? 4 : 2; f.img = await createImageBitmap(png);
+      f.chars = chars; f.lineH = common ? +common[1] : 60; f.Q = q === 'uhd' ? 4 : q === 'hd' ? 2 : 1; f.img = await createImageBitmap(png);
       f.ready = Object.keys(chars).length > 0;
       break;
     }
