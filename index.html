@@ -519,7 +519,7 @@ async function loadAssets(fileList) {
     let added = 0;
     if (pf.frames) {                                  // the page's own pre-parsed table (assets/atlas-*.json): no plist to download or parse
       for (const [name, a] of Object.entries(pf.frames)) {
-        if (!wanted.has(name) || atlas.frames.has(name)) continue;
+        if (atlas.frames.has(name)) continue;                          // (the pre-parsed table is small, so every frame is kept, including the extra sprites objects are built from)
         atlas.frames.set(name, { name, x: a[0], y: a[1], w: a[2], h: a[3], rotated: !!a[4], ox: a[5], oy: a[6], sheet });
         added++;
       }
@@ -602,7 +602,9 @@ function drawSprite(o, sx, sy, dim) {
   if (!fi) return false;
   const img = tintedFrame(fi, channelHexP(o.col || (typeof defaultMainFor === 'function' ? defaultMainFor(o) : 0), 'main'));
   if (!img) return false;
+  if (typeof drawChildren === 'function') drawChildren(o, sx, sy, dim, -1);
   paintSprite(img, fi, o, sx, sy, dim);
+  if (typeof drawChildren === 'function') drawChildren(o, sx, sy, dim, 0);
   if (typeof EXTRA_LAYERS !== 'undefined' && EXTRA_LAYERS[o.id]) {
     const xf = atlas.frames.get(EXTRA_LAYERS[o.id]), ximg = xf && tintedFrame(xf, channelHexP(o.col2 || 0, 'detail'));
     if (ximg) paintSprite(ximg, xf, o, sx, sy, dim);
@@ -3049,6 +3051,30 @@ paintSprite = function (img, fi, o, sx, sy, dim) {
   if (typeof lastBlend !== 'undefined' && lastBlend) { ctx.save(); ctx.globalCompositeOperation = 'lighter'; try { _paintSpriteBlend(img, fi, o, sx, sy, dim); } finally { ctx.restore(); } lastBlend = false; }
   else _paintSpriteBlend(img, fi, o, sx, sy, dim);
 };
+// ---- the extra sprites many objects are built from (decoded from GameObject::customSetup in the exe) ----
+// assets/children.json: id -> [[frame, offsetX, offsetY, z, rotation, additive], ...]. A negative z is drawn behind the object's own sprite.
+let CHILD = {};
+fetch('assets/children.json').then(r => r.json()).then(j => { CHILD = j; if (typeof draw === 'function') draw(); }).catch(() => { });
+function drawChildren(o, sx, sy, dim, phase) {
+  const list = CHILD[o.id];
+  if (!list) return;
+  const ts = list.filter(c => (phase < 0 ? c[3] < 0 : c[3] >= 0)).sort((a, b) => a[3] - b[3]);
+  const k = view.zoom, a = -o.rot * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+  for (const c of ts) {
+    const fi = atlas.frames.get(c[0]);
+    if (!fi) continue;
+    const detail = c[0].includes('_color_');
+    const hex = channelHexP(detail ? (o.col2 || defaultColFor(o)) : (o.col || (typeof defaultMainFor === 'function' ? defaultMainFor(o) : 0)), detail ? 'detail' : 'main');
+    const img = tintedFrame(fi, hex);
+    if (!img) continue;
+    const ox = c[1] * o.sx * (o.flipX ? -1 : 1), oy = c[2] * o.sy * (o.flipY ? -1 : 1);
+    const px = sx + (ox * ca - oy * sa) * k, py = sy - (ox * sa + oy * ca) * k;
+    const oc = Object.create(o);
+    oc.rot = o.rot + c[4] * ((o.flipX ? -1 : 1) * (o.flipY ? -1 : 1));
+    if (c[5]) lastBlend = true;
+    paintSprite(img, fi, oc, px, py, dim);
+  }
+}
 function defaultColFor(o) { const c = CDEF[o.id]; if (c && c[1]) return c[1]; return /^black/i.test(ID_FRAMES[o.id] || '') ? 1010 : 0; }
 // ---- sprites stored as one quarter: the sprite offset points at a corner of the object, so the full shape is that quarter mirrored ----
 function isQuarterFrame(fi) {
@@ -3072,8 +3098,12 @@ Object.assign(ID_FRAMES, { 289: 'triangle_a_02_001.png', 291: 'triangle_a_04_001
 const EXTRA_LAYERS = { 1743: 'blockOutline_14_001.png', 1744: 'blockOutline_15_001.png', 289: 'blockOutline_14_001.png', 291: 'blockOutline_15_001.png' };
 // second sprites the game adds to these objects (decoded from GameObject::addColorSprite in the exe): the 2.2 letter pieces and the light-square family
 Object.assign(EXTRA_LAYERS, {"263":"lightsquare_04_05_color_001.png","264":"lightsquare_04_05_color_001.png","265":"lightsquare_04_05_color_001.png","267":"lightsquare_04_05_color_001.png","268":"lightsquare_04_05_color_001.png","2732":"gdh_01_1_05_2_001.png","2735":"gdh_01_1_05b_2_001.png","2738":"gdh_01_1_06_2_001.png","2741":"gdh_01_1_06b_2_001.png","2744":"gdh_01_1_07_2_001.png","2745":"gdh_01_1_07b_2_001.png","2746":"gdh_01_1_08_2_001.png","2747":"gdh_01_1_08b_2_001.png","2748":"gdh_01_1_09_2_001.png","2749":"gdh_01_1_09b_2_001.png","2750":"gdh_01_1_10_2_001.png","2751":"gdh_01_1_10b_2_001.png","2752":"gdh_01_1_11_2_001.png","2755":"gdh_01_1_11b_2_001.png","2758":"gdh_01_1_12_2_001.png","2761":"gdh_01_1_12b_2_001.png","2764":"gdh_01_2_01_2_001.png","2765":"gdh_01_2_01b_2_001.png","2766":"gdh_01_2_02_2_001.png","2767":"gdh_01_2_02b_2_001.png","2768":"gdh_01_2_03_2_001.png","2769":"gdh_01_2_03b_2_001.png","2770":"gdh_01_2_04_2_001.png","2773":"gdh_01_2_04b_2_001.png","2776":"gdh_01_2_05_2_001.png","2779":"gdh_01_2_05b_2_001.png","2782":"gdh_01_2_06_2_001.png","2785":"gdh_01_2_06b_2_001.png","2796":"gdh_01_2_11_2_001.png","2799":"gdh_01_2_11b_2_001.png","2802":"gdh_01_2_12_2_001.png","2805":"gdh_01_2_12b_2_001.png","2838":"gdh_02_1_2_001.png","2839":"gdh_02_2_2_001.png","2840":"gdh_02_3_2_001.png","2841":"gdh_02_4_2_001.png","2842":"gdh_02_1b_2_001.png","2843":"gdh_02_2b_2_001.png","2844":"gdh_02_3b_2_001.png","2845":"gdh_02_4b_2_001.png","2846":"gdh_02_1c_2_001.png","2847":"gdh_02_2c_2_001.png","2848":"gdh_02_3c_2_001.png","2849":"gdh_02_4c_2_001.png"});
+// objects the game calls Black ... (Wavy Black Slope, Black Gradient Slope, ...) are black unless a colour is set
+let OBJ_NAMES = {};
+fetch('assets/objects.json').then(r => r.json()).then(j => { OBJ_NAMES = j; if (typeof draw === 'function') draw(); }).catch(() => { });
 function defaultMainFor(o) {
   const c = CDEF[o.id]; if (c && c[0]) return c[0];
+  if (OBJ_NAMES[o.id] && /\bblack\b/i.test(OBJ_NAMES[o.id]) && !/colou?red|pulsing|glow/i.test(OBJ_NAMES[o.id])) return 1010;
   const n = ID_FRAMES[o.id] || '';
   if (/^lighttriangle_01_/.test(n)) return 1010;                    // the plain Black Slope
   return /^triangle_/.test(n) ? 1004 : 0;
@@ -4348,25 +4378,38 @@ function goptOverlay() {
     ignore: false, effect: true, dur: true, song: false, bpm: false, kframe: true, m1: false, m2: false, m3: false, tin: false, tout: false };
   // Hitboxes: the sizes come from the game's own object setup (HIT_TABLE / hitSize in the play code). Blue = solid, red = hazard, green = pads, orbs and portals.
   const SPECIAL_TYPES = new Set([3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 26, 27, 29, 32, 33, 34, 35, 41, 43, 46]);
+  let OBJ_TYPE = {};                                                     // object id -> the game's object type (assets/objtypes.json, from the exe's setup code)
+  fetch('assets/objtypes.json').then(r => r.json()).then(j => { OBJ_TYPE = j; draw(); }).catch(() => { });
   function drawHitboxes(force) {
     if (!level || !(force || viewState.hitbox) || typeof hitSize !== 'function') return;
     const W = canvas._w, H = canvas._h, [x0, y1] = toWorld(0, 0), [x1, y0] = toWorld(W, H);
-    ctx.save(); ctx.lineWidth = 1.5;
+    ctx.save(); ctx.lineWidth = 2;
     for (const o of level.objs) {
       if (o.x < x0 - 120 || o.x > x1 + 120 || o.y < y0 - 120 || o.y > y1 + 120) continue;
-      if (o.cls === 'deco' || o.cls === 'trigger') continue;
-      const e = HIT_TABLE[o.id], ty = e ? e[0] : null;
+      if ((o.cls === 'deco' && OBJ_TYPE[o.id] === undefined && !HIT_TABLE[o.id]) || o.cls === 'trigger') continue;
+      const e = HIT_TABLE[o.id], ty = e ? e[0] : (OBJ_TYPE[o.id] !== undefined ? OBJ_TYPE[o.id] : null);
       if (ty === 7 || ty === -1 || ty === 20) continue;
-      let kind = ty === 2 || o.cls === 'spike' ? 'hazard' : (SPECIAL_TYPES.has(ty) || o.cls === 'portal' || o.cls === 'padorb') ? 'special' : 'solid';
+      let kind = ty === 2 || ty === 47 || o.cls === 'spike' ? 'hazard' : (SPECIAL_TYPES.has(ty) || o.cls === 'portal' || o.cls === 'padorb') ? 'special' : 'solid';
       const col = kind === 'hazard' ? '255,60,60' : kind === 'special' ? '70,235,110' : '70,150,255';
-      ctx.strokeStyle = `rgba(${col},.95)`; ctx.fillStyle = `rgba(${col},.22)`;
+      ctx.strokeStyle = `rgba(${col},.95)`;                              // outlines only, like the game
       if (typeof SAW_WIDTH !== 'undefined' && SAW_WIDTH[o.id]) {
         const [sx, sy] = toScreen(o.x, o.y), r = 0.3 * SAW_WIDTH[o.id] * Math.max(o.sx, o.sy) * view.zoom;
         ctx.beginPath(); ctx.arc(sx, sy, r, 0, 6.2832); ctx.fill(); ctx.stroke(); continue;
       }
-      const [w, h] = hitSize(o.id, [1, 1]), b = objBox(o, w, h, 0, 0);
+      if (ty === 25 && typeof slopeBox === 'function') {                    // a slope's hitbox is the triangle, not its box
+        const s = slopeBox(o);
+        if (s) {
+          const A = (x, y) => toScreen(x, y), L = s.l, R = s.r, T = s.t, B = s.b;
+          const pts = s.rising ? (s.floorTop ? [[L, T], [R, T], [L, B]] : [[L, B], [R, B], [R, T]]) : (s.floorTop ? [[L, T], [R, T], [R, B]] : [[L, B], [R, B], [L, T]]);
+          ctx.beginPath(); pts.forEach(([x, y], i) => { const [px, py] = A(x, y); if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py); }); ctx.closePath(); ctx.stroke();
+          continue;
+        }
+      }
+      let [w, h] = hitSize(o.id, [1, 1]);
+      if (ty === 47) { w *= 0.4; h *= 0.6; }                                // animated monsters: a smaller box than the picture
+      const b = objBox(o, w, h, 0, 0);
       const [ax, ay] = toScreen(b.l, b.t), [bx, by] = toScreen(b.r, b.b);
-      ctx.fillRect(ax, ay, bx - ax, by - ay); ctx.strokeRect(ax, ay, bx - ax, by - ay);
+      ctx.strokeRect(ax, ay, bx - ax, by - ay);
     }
     ctx.restore();
   }
