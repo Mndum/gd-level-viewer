@@ -2054,7 +2054,7 @@ function triggerFlags(o) {
 }
 // Property keys used below come from the community object-property table (gd-info-explorer / GD Docs).
 const SHADER_IDS = new Set([2904, 2905, 2907, 2909, 2910, 2911, 2912, 2913, 2914, 2915, 2916, 2917, 2919, 2920, 2921, 2922, 2923]);
-const SIM_IDS = new Set([899, 29, 30, 104, 105, 221, 717, 718, 743, 900, 915, 901, 1006, 1007, 1049, 1268, 1346, 2067, 1913, 1916, 2015]);
+const SIM_IDS = new Set([1347, 899, 29, 30, 104, 105, 221, 717, 718, 743, 900, 915, 901, 1006, 1007, 1049, 1268, 1346, 2067, 1913, 1916, 2015]);
 const isSimulated = o => (SIM_IDS.has(o.id) || SHADER_IDS.has(o.id)) && o.raw['11'] !== '1';
 // every shader value the timeline can drive, with its "off" value; units are the editor's own (screen height = 320 units)
 const SH_DEF = { gray: 0, grayR: 1, grayG: 1, grayB: 1, grayLum: 0, sepia: 0, invR: 0, invG: 0, invB: 0, hue: 0,
@@ -2239,7 +2239,7 @@ function buildTimeline() {
   const tOf = X => { if (X <= 0) return 0; const s = segAt(X); return s.t0 + (X - s.x0) / s.v; };
   const speedAt = X => segAt(X).v;
 
-  const ev = { chan: new Map(), pulseC: new Map(), pulseG: new Map(), move: new Map(), alpha: new Map(), toggle: new Map(), rot: new Map(),
+  const ev = { chan: new Map(), pulseC: new Map(), pulseG: new Map(), move: new Map(), follow: new Map(), alpha: new Map(), toggle: new Map(), rot: new Map(),
                scale: new Map(), zoom: [], coff: [], crot: [], sh: new Map(), shock: [] };
   const push = (map, key, e) => { if (!map.has(key)) map.set(key, []); map.get(key).push(e); };
   const members = new Map(), first = new Map();
@@ -2265,6 +2265,8 @@ function buildTimeline() {
       case 901:
         if (o.raw['100'] === '1' || o.raw['394'] === '1') return;
         push(ev.move, g, { t, dur, e, rate, dx: rawNum(o, '28', 0), dy: rawNum(o, '29', 0) }); return;
+      case 1347:                                                 // Follow: group g copies the movement of group 71, scaled by the x/y mods, for the duration
+        if (o.raw['71'] && g) push(ev.follow, g, { t, dur, tgt: rawNum(o, '71', 0), xm: rawNum(o, '72', 1), ym: rawNum(o, '73', 1) }); return;
       case 1007: push(ev.alpha, g, { t, dur, e, rate, to: [rawNum(o, '35', 1)] }); return;
       case 1049:
         push(ev.toggle, g, { t, on: o.raw['56'] === '1' });
@@ -2298,7 +2300,7 @@ function buildTimeline() {
     fire(o, tOf(o.x), 0);
   }
   const byT = (a, b) => a.t - b.t;
-  for (const m of [ev.chan, ev.pulseC, ev.pulseG, ev.move, ev.alpha, ev.toggle, ev.rot, ev.scale, ev.sh]) for (const arr of m.values()) arr.sort(byT);
+  for (const m of [ev.chan, ev.pulseC, ev.pulseG, ev.move, ev.follow, ev.alpha, ev.toggle, ev.rot, ev.scale, ev.sh]) for (const arr of m.values()) arr.sort(byT);
   for (const arr of [ev.zoom, ev.coff, ev.crot, ev.shock]) arr.sort(byT);
   let ang = 0;
   for (const e of ev.crot) { ang = e.add ? ang + e.deg : e.deg; e.to = [ang]; }          // "Add" stacks on the previous rotation
@@ -2332,6 +2334,21 @@ const envelope = (e, T) => {
   const y = x - e.fin - e.hold;
   return e.fout > 0 && y < e.fout ? 1 - y / e.fout : 0;
 };
+// how far a group has moved by time T: its own move triggers plus whatever it has followed (depth-limited so loops end)
+function moveDisp(ev, g, T, depth) {
+  let dx = 0, dy = 0;
+  for (const e of (ev.move.get(g) || [])) {
+    if (e.t > T) break;
+    const k = ease(e.e, e.rate, e.dur > 0 ? clampN((T - e.t) / e.dur, 0, 1) : 1);
+    dx += e.dx * k; dy += e.dy * k;
+  }
+  if (depth < 6) for (const f of (ev.follow.get(g) || [])) {
+    if (f.t > T || f.dur <= 0) continue;
+    const a = moveDisp(ev, f.tgt, f.t, depth + 1), b = moveDisp(ev, f.tgt, Math.min(T, f.t + f.dur), depth + 1);
+    dx += (b[0] - a[0]) * f.xm; dy += (b[1] - a[1]) * f.ym;
+  }
+  return [dx, dy];
+}
 function stateAt(X) {
   if (tl.cache && tl.cacheX === X) return tl.cache;
   const m = timelineModel(), T = m.tOf(X), ev = m.ev;
@@ -2352,14 +2369,11 @@ function stateAt(X) {
     channels.set(id, cur);
   }
   const groups = new Map();
-  const ids = new Set([...ev.move.keys(), ...ev.alpha.keys(), ...ev.toggle.keys(), ...ev.rot.keys(), ...ev.scale.keys(), ...ev.pulseG.keys()]);
+  const ids = new Set([...ev.move.keys(), ...ev.follow.keys(), ...ev.alpha.keys(), ...ev.toggle.keys(), ...ev.rot.keys(), ...ev.scale.keys(), ...ev.pulseG.keys()]);
   for (const g of ids) {
     const st = { dx: 0, dy: 0, alpha: 1, hidden: false, rot: 0, sx: 1, sy: 1, center: 0, lock: false, pulse: null };
-    for (const e of (ev.move.get(g) || [])) {
-      if (e.t > T) break;
-      const k = ease(e.e, e.rate, e.dur > 0 ? clampN((T - e.t) / e.dur, 0, 1) : 1);
-      st.dx += e.dx * k; st.dy += e.dy * k;
-    }
+    const d0 = moveDisp(ev, g, T, 0);
+    st.dx = d0[0]; st.dy = d0[1];
     if (ev.alpha.has(g)) st.alpha = foldVec(ev.alpha.get(g), T, [1])[0];
     for (const e of (ev.toggle.get(g) || [])) { if (e.t > T) break; st.hidden = !e.on; }
     for (const e of (ev.rot.get(g) || [])) {
@@ -3419,7 +3433,7 @@ function stopPlay() {
   }
   function label(text, h, o) {
     const i = put(mk('img', 'tx hid'), Object.assign({ w: o.w || 200, h }, o));
-    live(i, () => textURL(text, Math.max(8, Math.round(h * S.k * 1.3))));
+    live(i, () => textURL(typeof text === 'function' ? text() : text, Math.max(8, Math.round(h * S.k * 1.3))));
     return i;
   }
   const click = id => () => { const e = $(id); if (e && !e.disabled) e.click(); };
@@ -3476,7 +3490,8 @@ function stopPlay() {
   live(rp.layerL.appendChild(img()), () => frameURL(FR.arrow2));
   rp.layerL2 = put(mk('button', 'a rb hid'), { cx: 1663, cy: 665, w: 58, h: 72, ax: 'r' });
   live(rp.layerL2.appendChild(img()), () => frameURL(FR.arrow3));
-  rp.layerN = label('0', 40, { cx: 1763, cy: 665, w: 60, ax: 'r' });
+  S.layer = -1;
+  rp.layerN = label(() => (S.layer < 0 ? 'All' : String(S.layer)), 40, { cx: 1763, cy: 665, w: 60, ax: 'r' });
   rp.layerR = put(mk('button', 'a rb hid'), { cx: 1866, cy: 665, w: 58, h: 72, ax: 'r' });
   { const i = img(); i.style.transform = 'scaleX(-1)'; rp.layerR.appendChild(i); live(i, () => frameURL(FR.arrow3)); }
 
@@ -3562,7 +3577,9 @@ function stopPlay() {
   { const infoI = inPane('delete', put(mk('div', 'a hid'), PO({ cx: 1483, cy: 818, w: 46, h: 46 }))); infoI.style.pointerEvents = 'none'; const ii = infoI.appendChild(img()); ii.style.cssText = 'width:100%;height:100%;object-fit:contain'; live(ii, frameIcon(FR.info)); }
 
   // ----- delete tab -----
-  const delAct = () => act('del');
+  // the Delete filter limits deletion to static (solid) or detail (decoration) objects; Custom keeps the selection as is
+  const passFilter = o => S.filter === 'static' ? o.cls !== 'deco' : S.filter === 'details' ? o.cls === 'deco' : true;
+  const delAct = () => { const l = selList().filter(passFilter); if (l.length) pushOp(opDelete(l), []); };
   paneSquare('delete', 'GJ_button_04', DARK, { cx: 545, cy: 850, w: 124, h: 124 }, frameIcon(FR.del2), delAct, 'Delete the selected objects');
   paneSquare('delete', 'GJ_button_04', DARK, { cx: 545, cy: 985, w: 124, h: 124 }, frameIcon(FR.delAll), () => act('selId'), 'Select every object with the same ID, then press delete');
   { const b = paneSquare('delete', 'GJ_button_04', DARK, { cx: 680, cy: 850, w: 124, h: 124 }, null, null, 'Delete all start positions');
@@ -3722,6 +3739,7 @@ function stopPlay() {
   function newObject(id, x, y) {
     const L = parseLevel('kA4,0;1,' + id + ',2,' + x + ',3,' + y + ';');
     const o = L.objs[0]; o.idx = level.nextIdx++; o.dirty = true; o.src = null;
+    if (S.layer > 0) { o.raw['20'] = String(S.layer); if (o.fields) o.fields.push('20', String(S.layer)); }
     return o;
   }
   let down = null;
@@ -3739,20 +3757,61 @@ function stopPlay() {
   }, true);
 
   // ----- right grid: copy and paste -----
-  rp.copy.onclick = () => { const s = selList(); if (s.length) { S.clip = s.map(o => ({ id: o.id, x: o.x, y: o.y, fields: o.fields.slice() })); refresh(); } };
+  // Copy / Paste keep every property (colours, groups, z-layer, trigger settings); paste lands the group at the centre of the view.
+  const cloneObj = o => Object.assign({}, o, { fields: o.fields ? o.fields.slice() : [], raw: Object.assign({}, o.raw), dirty: true, src: null });
+  rp.copy.onclick = () => { const s = selList(); if (s.length) { S.clip = s.map(o => cloneObj(o)); refresh(); } };
   rp.dup.onclick = () => act('dup');
   rp.desel.onclick = () => act('clear');
+  // Go To Layer: the editor layer new objects are placed on (key 20); All places them on layer 0
+  const goLayer = n => () => { S.layer = Math.max(-1, Math.min(9999, n(S.layer))); refresh(); };
+  rp.layerL.onclick = goLayer(() => -1); rp.layerL2.onclick = goLayer(v => v - 1); rp.layerR.onclick = goLayer(v => v + 1);
   rp.paste.onclick = () => {
-    if (!S.clip) return;
-    const [cx, cy] = [view.cx, view.cy];
-    const minx = Math.min(...S.clip.map(c => c.x)), miny = Math.min(...S.clip.map(c => c.y));
-    const objs = S.clip.map(c => {
-      const o = newObject(c.id, Math.round((cx + (c.x - minx)) / 30) * 30 + 15, Math.round((cy + (c.y - miny)) / 30) * 30 + 15);
-      return o;
-    });
+    if (!S.clip || !level) return;
+    const x0 = Math.min(...S.clip.map(c => c.x)), x1 = Math.max(...S.clip.map(c => c.x));
+    const y0 = Math.min(...S.clip.map(c => c.y)), y1 = Math.max(...S.clip.map(c => c.y));
+    const dx = Math.round((view.cx - (x0 + x1) / 2) / 30) * 30, dy = Math.round((view.cy - (y0 + y1) / 2) / 30) * 30;
+    const objs = S.clip.map(c => { const o = cloneObj(c); o.x = c.x + dx; o.y = c.y + dy; o.idx = level.nextIdx++; return o; });
     pushOp(opAdd(objs), objs);
   };
 
+  // Copy Values / Paste State / Paste Color: state = every property except id, position, rotation, flip and scale
+  const NOT_STATE = new Set(['1', '2', '3', '4', '5', '6', '128', '129', '131', '132', '32']);
+  const COLOR_KEYS = ['19', '20', '21', '22', '41', '42', '43', '44', '497'];
+  function setKey(o, k, v) {
+    if (v === undefined) { delete o.raw[k]; if (o.fields) for (let i = 0; i + 1 < o.fields.length; i += 2) if (o.fields[i] === k) { o.fields.splice(i, 2); break; } return; }
+    o.raw[k] = String(v);
+    if (!o.fields) o.fields = [];
+    let hit = false;
+    for (let i = 0; i + 1 < o.fields.length; i += 2) if (o.fields[i] === k) { o.fields[i + 1] = String(v); hit = true; break; }
+    if (!hit) o.fields.push(k, String(v));
+  }
+  function syncDerived(o) {
+    const p = o.raw;
+    o.col = p['21'] !== undefined ? Number(p['21']) : 0; o.col2 = p['22'] !== undefined ? Number(p['22']) : 0;
+    o.zl = p['24'] !== undefined ? Number(p['24']) : (typeof defaultZLayer === 'function' ? defaultZLayer(o.id) : o.zl);
+    o.zo = p['25'] !== undefined ? Number(p['25']) : 0; o.groups = p['57'] || '';
+  }
+  const rawSnap = o => ({ o, raw: Object.assign({}, o.raw), fields: o.fields ? o.fields.slice() : [] });
+  function opRaw(objs, apply, name) {
+    const before = objs.map(rawSnap); let after = null;
+    const put = snaps => { for (const s of snaps) { s.o.raw = Object.assign({}, s.raw); s.o.fields = s.fields.slice(); syncDerived(s.o); s.o.dirty = true; } if (typeof tl !== 'undefined') tl.dirty = true; };
+    return { name, structural: false,
+      do() { if (after) return put(after); for (const o of objs) { apply(o); syncDerived(o); o.dirty = true; } after = objs.map(rawSnap); if (typeof tl !== 'undefined') tl.dirty = true; },
+      undo() { put(before); } };
+  }
+  const pasteKeys = (keys, name) => () => {
+    const sel = selList(); if (!sel.length || !S.state) return;
+    pushOp(opRaw(sel, o => { for (const k of keys(o)) setKey(o, k, S.state[k]); }, name));
+  };
+  rp.cvals.onclick = () => {
+    const o = view.selected || selList()[0]; if (!o) return;
+    S.state = Object.assign({}, o.raw); refresh();
+  };
+  rp.pstate.onclick = pasteKeys(() => { const ks = new Set(Object.keys(S.state)); return [...ks].filter(k => !NOT_STATE.has(k)); }, 'paste state');
+  rp.pcolor.onclick = () => {
+    const sel = selList(); if (!sel.length || !S.state) return;
+    pushOp(opRaw(sel, o => { for (const k of COLOR_KEYS) setKey(o, k, S.state[k]); }, 'paste colour'));
+  };
   // ---------- the scroll slider ----------
   const track = top.track;
   function slideTo(clientX) {
@@ -3798,8 +3857,9 @@ function stopPlay() {
       else if (r.b && r.apply && r.b._lastU !== u) { r.b._lastU = u; r.apply(u); }
     }
     const sel = (typeof selList === 'function' ? selList() : []).length;
-    for (const k of ['copy', 'dup', 'desel']) rp[k].classList.toggle('dim', !sel);
+    for (const k of ['copy', 'dup', 'desel', 'cvals']) rp[k].classList.toggle('dim', !sel);
     rp.paste.classList.toggle('dim', !S.clip);
+    rp.pstate.classList.toggle('dim', !S.state); rp.pcolor.classList.toggle('dim', !S.state);
     top.trash.classList.toggle('off', !sel);
     top.undo.classList.toggle('off', !(hist && hist.undo.length));
     top.redo.classList.toggle('off', !(hist && hist.redo.length));
