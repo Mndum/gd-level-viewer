@@ -345,7 +345,8 @@ function parseLevel(levelStr) {
     objs.push({
       id, cls: classify(id),
       x: Number(p['2']), y: Number(p['3']),
-      rot: Number(p['6'] || 0),
+      rot: (p['131'] !== undefined || p['132'] !== undefined) ? Number(p['131'] !== undefined ? p['131'] : (p['6'] || 0)) : Number(p['6'] || 0),
+      dX: (p['131'] !== undefined || p['132'] !== undefined) ? Number(p['132'] !== undefined ? p['132'] : (p['6'] || 0)) - Number(p['131'] !== undefined ? p['131'] : (p['6'] || 0)) : 0,
       sx: (p['128'] !== undefined ? Number(p['128']) : 1) * uni,
       sy: (p['129'] !== undefined ? Number(p['129']) : 1) * uni,
       flipX: p['4'] === '1', flipY: p['5'] === '1',
@@ -549,9 +550,7 @@ function paintSprite(img, fi, o, sx, sy, dim) {
   const W = fi.w / Q, H = fi.h / Q;
   ctx.save();
   ctx.translate(sx, sy);
-  ctx.rotate((o.rot * Math.PI) / 180);
-  ctx.scale(o.flipX ? -1 : 1, o.flipY ? -1 : 1);
-  ctx.scale(o.sx * k, o.sy * k);
+  objMatrix(o, k);
   ctx.translate(fi.ox / Q, -fi.oy / Q);
   if (fi.rotated) ctx.rotate(-Math.PI / 2);
   ctx.globalAlpha = (dim ? 0.15 : 1) * curGA;
@@ -1676,7 +1675,10 @@ function objSegment(o) {
   const at = key => { for (let i = 0; i + 1 < f.length; i += 2) if (f[i] === key) return i; return -1; };
   const put = (key, val) => { const i = at(key); if (i >= 0) f[i + 1] = String(val); else f.push(key, String(val)); };
   put('2', fmtNum(o.x)); put('3', fmtNum(o.y));
-  if (o.rot !== 0 || at('6') >= 0) put('6', fmtNum(o.rot));
+  if (at('131') >= 0 || at('132') >= 0) {                      // 2.2 warp angles: x-axis angle and y-axis angle
+    put('131', fmtNum(o.rot)); put('132', fmtNum(o.rot + (o.dX || 0)));
+    if (at('6') >= 0) put('6', fmtNum(o.rot));
+  } else if (o.rot !== 0 || at('6') >= 0) put('6', fmtNum(o.rot));
   if (o.flipX) put('4', '1'); else if (at('4') >= 0) put('4', '0');
   if (o.flipY) put('5', '1'); else if (at('5') >= 0) put('5', '0');
   if (o.scaleDirty) { put('128', fmtNum(o.sx / o.uni)); put('129', fmtNum(o.sy / o.uni)); }
@@ -2745,6 +2747,14 @@ function drawTextObject(o, sx, sy, dim) {
   ctx.drawImage(cv, -cv.width * o.sx * k / 2, -cv.height * o.sy * k / 2, cv.width * o.sx * k, cv.height * o.sy * k);
   ctx.restore();
   return true;
+}
+// ---- object transform: rotation plus the 2.2 "warp" angles ----
+// An object stores the angle of its x axis (key 131) and of its y axis (key 132). Equal angles are a plain rotation;
+// different angles skew it. o.rot is the x-axis angle and o.dX is how far the y axis differs from it.
+function objMatrix(o, k) {
+  const ty = o.rot * Math.PI / 180, tx = (o.rot + (o.dX || 0)) * Math.PI / 180;
+  const sx = o.sx * k * (o.flipX ? -1 : 1), sy = o.sy * k * (o.flipY ? -1 : 1);
+  ctx.transform(Math.cos(ty) * sx, Math.sin(ty) * sx, -Math.sin(tx) * sy, Math.cos(tx) * sy, 0, 0);
 }
 </script><script>
 "use strict";
