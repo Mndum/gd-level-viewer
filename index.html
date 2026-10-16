@@ -3247,6 +3247,896 @@ function stopPlay() {
   }, 0);
 })();
 </script>
+
+<script>
+"use strict";
+// ================= editor shell: the real editor's layout, built from the game's own UI sprites =================
+// The page's existing functions do the work (undo, delete, play...); this layer only changes how it looks and where the buttons are.
+(function editorShell() {
+  const DW = 1917, DH = 1078, BAR = 378;                 // the design frame (an editor screenshot) and the bottom bar's height in it
+  const S = { k: 1, tab: 'build', hidden: false, tog: { swipe: true, rotate: true, free: true, snap: true }, items: [], images: [], clip: null };
+
+  // ---------- frames and images ----------
+  const FR = {
+    undo: 'GJ_undoBtn_001.png', redo: 'GJ_redoBtn_001.png', trash: 'GJ_trashBtn_001.png', pause: 'GJ_pauseBtn_001.png', gear: 'GJ_optionsBtn02_001.png',
+    plain: 'GJ_plainBtn_001.png', music: 'GJ_playMusicBtn_001.png', play: 'GJ_playEditorBtn_001.png', zin: 'GJ_zoomInBtn_001.png', zout: 'GJ_zoomOutBtn_001.png',
+    grid: 'edit_gridBtn_001.png', view: 'edit_viewBtn_001.png', build: 'edit_buildBtn_001.png', del: 'edit_deleteBtn_001.png', hammer: 'GJ_hammerIcon_001.png',
+    copy: 'GJ_copyBtn2_001.png', paste: 'GJ_pasteBtn2_001.png', dup: 'GJ_duplicateObjectBtn2_001.png', special: 'GJ_editObjBtn4_001.png',
+    group: 'GJ_groupIDBtn2_001.png', object: 'GJ_editObjBtn3_001.png', cvals: 'GJ_copyStateBtn_001.png', pstate: 'GJ_pasteStateBtn_001.png',
+    pcolor: 'GJ_pasteColorBtn_001.png', hsv: 'GJ_editHSVBtn2_001.png', layer: 'GJ_goToLayerBtn_001.png', desel: 'GJ_deSelBtn2_001.png',
+    arrow2: 'GJ_arrow_02_001.png', arrow3: 'GJ_arrow_03_001.png', earrow: 'GJ_editorArrow_001.png', tabOn: 'GJ_tabOn_001.png', tabOff: 'GJ_tabOff_001.png',
+    swipe: 'edit_swipeBtn_001.png', freemove: 'edit_freeMoveBtn_001.png', snap: 'edit_snapBtn_001.png', cw: 'edit_cwBtn_001.png', ccw: 'edit_ccwBtn_001.png',
+    info: 'GJ_infoIcon_001.png', delAll: 'GJ_deleteAllIcon_001.png', find: 'edit_findBtn_001.png', del2: 'edit_delBtn_001.png'
+  };
+  const VIEW_ICONS = ['edit_previewModeBtn', 'edit_hitboxesBtn', 'edit_showHiddenBtn', 'edit_LDMBtn', 'edit_animsBtn', 'edit_particlesBtn', 'edit_shadersBtn',
+    'edit_groundBtn', 'edit_objInfoBtn', 'edit_gridBtn', 'edit_selectFilterBtn', 'edit_ignoreDamageBtn', 'edit_durationLinesBtn', 'edit_songLinesBtn',
+    'edit_bpmLinesBtn', 'edit_keyframeLinesBtn', 'edit_traceInBtn', 'edit_traceOutBtn'].map(n => n + '_001.png');
+  const EDIT_ICONS = ['edit_upBtn', 'edit_upBtn2', 'edit_upBtn3', 'edit_upBtn5', 'edit_downBtn', 'edit_downBtn2', 'edit_downBtn3', 'edit_downBtn5', 'edit_leftBtn',
+    'edit_rightBtn', 'edit_flipXBtn', 'edit_flipYBtn', 'edit_rotate45lBtn', 'edit_rotate45rBtn', 'edit_freeRotateBtn', 'edit_rotateSnapBtn', 'edit_scaleBtn',
+    'edit_scaleXYBtn', 'edit_warpBtn', 'edit_findBtn', 'edit_delBtn', 'edit_deselectBtn'].map(n => n + '_001.png');
+  UI_FRAMES.push(...Object.values(FR), ...VIEW_ICONS, ...EDIT_ICONS);
+  for (const s of ['GJ_GameSheet04', 'GJ_GameSheetEditor']) if (!SHEET_STEMS.includes(s)) SHEET_STEMS.push(s);
+
+  const urlCache = new Map();
+  function frameCanvas(name, hex) {
+    const fi = atlas.frames.get(name);
+    if (!fi) return null;
+    const t = tintedFrame(fi, hex || 'ffffff');
+    if (!t) return null;
+    if (!fi.rotated) return t;
+    const c = document.createElement('canvas'); c.width = fi.w; c.height = fi.h;
+    const g = c.getContext('2d');
+    g.translate(fi.w / 2, fi.h / 2); g.rotate(-Math.PI / 2); g.drawImage(t, -t.width / 2, -t.height / 2);
+    return c;
+  }
+  function frameURL(name, hex) {
+    const key = name + '|' + (hex || '') + '|' + assetQuality;
+    if (urlCache.has(key)) return urlCache.get(key);
+    const c = frameCanvas(name, hex);
+    if (!c) return '';
+    const u = c.toDataURL('image/png');
+    urlCache.set(key, u);
+    return u;
+  }
+  // a crop of a frame (used to take just the eye out of the "View" icon)
+  function cropURL(name, fx0, fy0, fx1, fy1) {
+    const key = 'crop|' + name + fx0 + fy0 + fx1 + fy1 + assetQuality;
+    if (urlCache.has(key)) return urlCache.get(key);
+    const c = frameCanvas(name);
+    if (!c) return '';
+    const o = document.createElement('canvas');
+    const sx = c.width * fx0, sy = c.height * fy0, sw = c.width * (fx1 - fx0), sh = c.height * (fy1 - fy0);
+    o.width = Math.round(sw); o.height = Math.round(sh);
+    o.getContext('2d').drawImage(c, sx, sy, sw, sh, 0, 0, o.width, o.height);
+    const u = o.toDataURL('image/png');
+    urlCache.set(key, u);
+    return u;
+  }
+  // the plain button/panel pictures (GJ_button_0N, GJ_square0N, ...) live in single files next to the sheets
+  const bases = new Map();
+  async function loadBase(name) {
+    if (bases.has(name)) return bases.get(name);
+    const p = (async () => {
+      for (const q of (assetQuality === 'uhd' ? ['uhd', 'hd'] : ['hd', 'uhd'])) {
+        const f = await fetchAnyFile([`${name}-${q}.png`]);
+        if (f) { const bmp = await createImageBitmap(f); return { bmp, w: bmp.width, h: bmp.height }; }
+      }
+      return null;
+    })();
+    bases.set(name, p);
+    return p;
+  }
+  const baseReady = new Map();
+  function baseURL(name, hex) {
+    const key = name + '|' + (hex || '') + '|' + assetQuality;
+    if (urlCache.has(key)) return urlCache.get(key);
+    const b = baseReady.get(name);
+    if (!b) { loadBase(name).then(r => { if (r) { baseReady.set(name, r); refresh(); } }); return ''; }
+    const c = document.createElement('canvas'); c.width = b.w; c.height = b.h;
+    const g = c.getContext('2d');
+    g.drawImage(b.bmp, 0, 0);
+    if (hex) { g.globalCompositeOperation = 'multiply'; g.fillStyle = '#' + hex; g.fillRect(0, 0, b.w, b.h); g.globalCompositeOperation = 'destination-in'; g.drawImage(b.bmp, 0, 0); }
+    const u = c.toDataURL('image/png');
+    urlCache.set(key, u);
+    return u;
+  }
+  const textURL = (text, h) => (bmfont.ready ? bmDataURL(text, h) : '');
+
+  // ---------- layout helpers (positions are in the design frame; --k turns them into pixels) ----------
+  const root = document.createElement('div');
+  root.id = 'sh';
+  $('app').appendChild(root);
+  const css = document.createElement('style');
+  css.textContent = `
+    #sh{position:absolute;inset:0;pointer-events:none;z-index:6;user-select:none;-webkit-user-select:none;--k:1px}
+    #sh .a{position:absolute;pointer-events:auto}
+    #sh button{padding:0;border:0;background:none;cursor:pointer;font:inherit;color:#fff;display:block}
+    #sh .rb img,#sh .ic{width:100%;height:100%;object-fit:contain;display:block;pointer-events:none}
+    #sh .rb:active,#sh .sq:active,#sh .tb:active{transform:scale(.93)}
+    #sh .off{filter:grayscale(.55) brightness(.62);pointer-events:none}
+    #sh .dim{opacity:.55;filter:saturate(.7)}
+    #sh .sq{border-style:solid;border-image-repeat:stretch;display:flex;align-items:center;justify-content:center;position:absolute}
+    #sh .sq .ic{position:absolute;left:-14%;top:-14%;width:128%;height:128%;object-fit:contain}
+    #sh .tx{position:absolute;pointer-events:none;object-fit:contain}
+    #shBar{position:absolute;left:0;right:0;bottom:0;background:#000;pointer-events:auto}
+    #shBar2{position:absolute;left:0;right:0;bottom:0;background:#101012;border-top:calc(3*var(--k)) solid #2a2a30}
+    #sh .vl{position:absolute;width:calc(3*var(--k));background:#26262c;pointer-events:none}
+    #sh .dot{position:absolute;border-radius:50%;background:#777;pointer-events:none}
+    #shTrack{border:calc(4*var(--k)) solid #fff;border-radius:calc(30*var(--k));background:#16161c;box-shadow:inset 0 calc(4*var(--k)) 0 rgba(0,0,0,.5)}
+    #shFps{position:absolute;left:calc(8*var(--k));top:calc(2*var(--k));font:600 calc(26*var(--k))/1 Arial,sans-serif;color:#fff;text-shadow:0 0 2px #000;pointer-events:none}
+    #hudTL,#hudTR,#rail,#bottom,#timeline,#bottomNote{display:none!important}
+    #sh.hide .hid{display:none}
+    #menuBox{background:linear-gradient(180deg,#a8643a,#8c5430)!important;border:4px solid #000!important;box-shadow:0 0 0 4px #fff,0 8px 0 rgba(0,0,0,.45)!important}
+    #menuBox .gdbtn{background:linear-gradient(180deg,#9dff4a,#3fbf1c)!important;border:3px solid #fff!important;outline:3px solid #000;border-radius:12px;color:#fff;text-shadow:0 2px 0 #000}
+    #menuBox .gdbtn:not(.green){background:linear-gradient(180deg,#bdbdbd,#8a8a8a)!important}
+    #menuBox .menuSec h3{color:#ffd24a}
+    #menuBox .menuRow label.chk{background:rgba(0,0,0,.3)}
+    #gallery #galleryBox{background:linear-gradient(180deg,#a8643a,#8c5430)!important;border:4px solid #000!important;box-shadow:0 0 0 4px #fff!important}
+  `;
+  document.head.appendChild(css);
+
+  function put(e, o) {
+    const { cx, cy, w, h, ax = 'l', ay = 't' } = o;
+    e.style.width = `calc(${w} * var(--k))`; e.style.height = `calc(${h} * var(--k))`;
+    if (ax === 'l') e.style.left = `calc(${cx - w / 2} * var(--k))`;
+    else if (ax === 'r') e.style.right = `calc(${DW - cx - w / 2} * var(--k))`;
+    else e.style.left = `calc(50% + ${cx - DW / 2 - w / 2} * var(--k))`;
+    if (ay === 't') e.style.top = `calc(${cy - h / 2} * var(--k))`; else e.style.bottom = `calc(${DH - cy - h / 2} * var(--k))`;
+    return e;
+  }
+  function mk(tag, cls, parent) { const e = document.createElement(tag); if (cls) e.className = cls; (parent || root).appendChild(e); return e; }
+  function img(src) { const i = document.createElement('img'); if (src) i.src = src; i.draggable = false; return i; }
+  // an image whose source is filled in (and refreshed) once the sprite sheets are loaded
+  function live(i, getter) { S.images.push({ i, getter }); const u = getter(); if (u) i.src = u; return i; }
+
+  // a round button that is one ready-made frame
+  function round(frame, o, onclick, title) {
+    const b = put(mk('button', 'a rb hid'), o);
+    live(b.appendChild(img()), () => frameURL(frame));
+    if (onclick) b.onclick = onclick;
+    if (title) b.title = title;
+    return b;
+  }
+  // a rounded-square button on one of the GJ_button_0N bases, with an icon frame on top
+  function square(baseName, hex, o, icon, onclick, title) {
+    const b = put(mk('button', 'a sq tb hid'), o);
+    const bw = Math.round(Math.min(o.w, o.h) * 0.27);
+    b.style.borderWidth = `calc(${bw} * var(--k))`;
+    b.style.borderImageSlice = '36% fill';
+    b._base = [baseName, hex];
+    S.images.push({ b, getter: () => baseURL(baseName, hex), apply: (u) => { b.style.borderImageSource = `url(${u})`; } });
+    const u0 = baseURL(baseName, hex); if (u0) b.style.borderImageSource = `url(${u0})`;
+    if (icon) { const i = img(); i.className = 'ic'; b.appendChild(i); live(i, typeof icon === 'function' ? icon : () => frameURL(icon)); }
+    if (onclick) b.onclick = onclick;
+    if (title) b.title = title;
+    return b;
+  }
+  function recolor(b, baseName, hex) {
+    b._base = [baseName, hex];
+    S.images = S.images.filter(r => r.b !== b);
+    S.images.push({ b, getter: () => baseURL(baseName, hex), apply: u => { b.style.borderImageSource = `url(${u})`; } });
+    const u = baseURL(baseName, hex); if (u) b.style.borderImageSource = `url(${u})`;
+  }
+  function label(text, h, o) {
+    const i = put(mk('img', 'tx hid'), Object.assign({ w: o.w || 200, h }, o));
+    live(i, () => textURL(text, Math.max(8, Math.round(h * S.k * 1.3))));
+    return i;
+  }
+  const click = id => () => { const e = $(id); if (e && !e.disabled) e.click(); };
+
+  // ---------- top bar ----------
+  const top = {};
+  top.undo = round(FR.undo, { cx: 85, cy: 68, w: 124, h: 124 }, () => act('undo'), 'Undo (Ctrl+Z)');
+  top.redo = round(FR.redo, { cx: 240, cy: 68, w: 124, h: 124 }, () => act('redo'), 'Redo (Ctrl+Y)');
+  top.trash = round(FR.trash, { cx: 394, cy: 68, w: 124, h: 124 }, () => act('del'), 'Delete the selected objects');
+  top.eye = put(mk('button', 'a rb hid'), { cx: 532, cy: 68, w: 90, h: 90 });
+  live(top.eye.appendChild(img()), () => frameURL(FR.plain));
+  { const e = img(); e.style.cssText = 'position:absolute;left:10%;top:22%;width:80%;height:56%;object-fit:contain'; top.eye.appendChild(e);
+    live(e, () => cropURL(FR.view, 0.08, 0.0, 0.92, 0.5)); }
+  top.eye.title = 'Hide or show the editor buttons';
+  top.eye.onclick = () => { S.hidden = !S.hidden; root.classList.toggle('hide', S.hidden); top.eye.classList.remove('hid'); };
+  // the horizontal scroll slider: moves the view along the level
+  top.track = put(mk('div', 'a hid'), { cx: 1022, cy: 68, w: 506, h: 30 }); top.track.id = 'shTrack';
+  top.thumb = put(mk('button', 'a rb hid'), { cx: 723, cy: 68, w: 100, h: 100 });
+  live(top.thumb.appendChild(img()), () => baseURL('GJ_moveBtn'));
+  top.grid = put(mk('button', 'a rb hid'), { cx: 1441, cy: 68, w: 90, h: 90, ax: 'r' });
+  live(top.grid.appendChild(img()), () => frameURL(FR.plain));
+  { const e = img(); e.style.cssText = 'position:absolute;left:12%;top:12%;width:76%;height:76%;object-fit:contain'; top.grid.appendChild(e); live(e, () => frameURL(FR.grid)); }
+  top.grid.title = 'Grid';
+  top.tools = put(mk('button', 'a rb hid'), { cx: 1562, cy: 68, w: 90, h: 90, ax: 'r' });
+  live(top.tools.appendChild(img()), () => frameURL(FR.plain));
+  { const e = img(); e.style.cssText = 'position:absolute;left:14%;top:14%;width:72%;height:72%;object-fit:contain'; top.tools.appendChild(e); live(e, () => frameURL(FR.hammer)); }
+  top.tools.title = 'Open, songs, assets and level options';
+  top.tools.onclick = () => menu.classList.add('on');
+  top.gear = round(FR.gear, { cx: 1700, cy: 68, w: 128, h: 128, ax: 'r' }, () => window.dialogsApi && dialogsApi.openSettings(), 'Level settings');
+  top.pause = round(FR.pause, { cx: 1853, cy: 68, w: 128, h: 128, ax: 'r' }, () => window.dialogsApi && dialogsApi.openPause(), 'Pause menu (Esc)');
+  const fps = mk('div', ''); fps.id = 'shFps'; fps.textContent = '';
+
+  // ---------- left rail ----------
+  const rail = {};
+  rail.music = round(FR.music, { cx: 85, cy: 220, w: 124, h: 124 }, click('btnMusic'), 'Song on / off');
+  rail.play = round(FR.play, { cx: 85, cy: 371, w: 124, h: 124 }, () => (typeof startPlay === 'function' && (play.active ? stopPlay() : startPlay())), 'Playtest as a cube (hold Space, Up or the mouse; Esc to stop)');
+  rail.zin = round(FR.zin, { cx: 85, cy: 523, w: 100, h: 100 }, click('btnZoomIn'), 'Zoom in');
+  rail.zout = round(FR.zout, { cx: 85, cy: 640, w: 100, h: 100 }, click('btnZoomOut'), 'Zoom out');
+
+  // ---------- right button grid ----------
+  const RP = [
+    ['copy', 'Copy', 1582, 203], ['paste', 'Paste', 1710, 203], ['dup', 'Copy + Paste', 1838, 203],
+    ['special', 'Edit Special', 1582, 320], ['group', 'Edit Group', 1710, 320], ['object', 'Edit Object', 1838, 320],
+    ['cvals', 'Copy Values', 1582, 438], ['pstate', 'Paste State', 1710, 438], ['pcolor', 'Paste Color', 1838, 438],
+    ['hsv', 'Colour channels', 1582, 557], ['layer', 'Go To Layer', 1710, 557], ['desel', 'De-select', 1838, 557]
+  ];
+  const rp = {};
+  for (const [k, title, cx, cy] of RP) {
+    const b = put(mk('button', 'a rb hid dim'), { cx, cy, w: 112, h: 112, ax: 'r' });
+    live(b.appendChild(img()), () => frameURL(FR[k]));
+    b.title = title; rp[k] = b;
+  }
+  rp.layerL = put(mk('button', 'a rb hid'), { cx: 1570, cy: 665, w: 58, h: 72, ax: 'r' });
+  live(rp.layerL.appendChild(img()), () => frameURL(FR.arrow2));
+  rp.layerL2 = put(mk('button', 'a rb hid'), { cx: 1663, cy: 665, w: 58, h: 72, ax: 'r' });
+  live(rp.layerL2.appendChild(img()), () => frameURL(FR.arrow3));
+  rp.layerN = label('0', 40, { cx: 1763, cy: 665, w: 60, ax: 'r' });
+  rp.layerR = put(mk('button', 'a rb hid'), { cx: 1866, cy: 665, w: 58, h: 72, ax: 'r' });
+  { const i = img(); i.style.transform = 'scaleX(-1)'; rp.layerR.appendChild(i); live(i, () => frameURL(FR.arrow3)); }
+
+  // ---------- bottom bar ----------
+  const bar = mk('div', 'hid'); bar.id = 'shBar'; bar.style.height = `calc(${BAR} * var(--k))`;
+  const bar2 = mk('div', 'hid'); bar2.id = 'shBar2'; bar2.style.height = `calc(${DH - 775} * var(--k))`;
+  const vl1 = mk('div', 'vl hid'); put(vl1, { cx: 323, cy: 925, w: 3, h: 280, ay: 'b' });
+  const vl2 = mk('div', 'vl hid'); put(vl2, { cx: 1596, cy: 925, w: 3, h: 280, ax: 'r', ay: 'b' });
+  const GREY = '555555', DARK = '3a3a3a', PINK = null;
+  const tabs = {};
+  const TABS = [['build', 85, 858, FR.build, 'Build'], ['edit', 231, 858, null, 'Edit'], ['delete', 85, 1003, FR.del, 'Delete'], ['view', 231, 1003, FR.view, 'View']];
+  for (const [id, cx, cy, icon, title] of TABS) {
+    const b = square('GJ_button_04', GREY, { cx, cy, w: 134, h: 134, ay: 'b' }, icon, () => setShellTab(id), title);
+    if (!icon) {
+      const i = img(); i.className = 'ic'; b.appendChild(i); live(i, () => frameURL(FR.hammer));
+      i.style.cssText = 'position:absolute;left:0;top:-8%;width:100%;height:70%;object-fit:contain;transform:scale(1.18)';
+      const t = img(); t.className = 'tx'; t.style.cssText = 'position:absolute;left:-4%;bottom:-6%;width:108%;height:54%;object-fit:contain'; b.appendChild(t);
+      live(t, () => textURL('Edit', Math.round(60 * S.k)));
+    }
+    tabs[id] = b;
+  }
+  const TOG = [['swipe', 1687, 850, FR.swipe, 'Swipe'], ['rotate', 1836, 850, FR.cw, 'Rotate'], ['free', 1687, 995, FR.freemove, 'Free move'], ['snap', 1836, 995, FR.snap, 'Snap']];
+  const togs = {};
+  for (const [id, cx, cy, icon, title] of TOG) {
+    const b = square('GJ_button_01', null, { cx, cy, w: 134, h: 134, ax: 'r', ay: 'b' }, icon, () => { S.tog[id] = !S.tog[id]; applyToggles(); }, title);
+    togs[id] = b;
+    if (id === 'rotate') {
+      const t = img(); t.className = 'tx'; t.style.cssText = 'position:absolute;left:0;bottom:2%;width:100%;height:40%;object-fit:contain'; b.appendChild(t); live(t, () => textURL('Rotate', Math.round(40 * S.k)));
+      const ic = b.querySelector('.ic'); if (ic) ic.style.cssText = 'position:absolute;left:12%;top:-6%;width:76%;height:68%;object-fit:contain';
+    }
+  }
+  function applyToggles() {
+    for (const id in togs) recolor(togs[id], S.tog[id] ? 'GJ_button_01' : 'GJ_button_04', S.tog[id] ? null : DARK);
+    if (typeof snapOn !== 'undefined') snapOn = !S.tog.free || S.tog.snap;
+  }
+
+  // ---------- tab contents ----------
+  const panes = { build: [], edit: [], delete: [], view: [] };
+  const inPane = (id, e) => { panes[id].push(e); return e; };
+  const PO = (o) => Object.assign({ ay: 'b', ax: 'c' }, o);
+  function paneSquare(id, base, hex, o, icon, onclick, title) { return inPane(id, square(base, hex, PO(o), icon, onclick, title)); }
+  function paneLabel(id, text, h, o) { return inPane(id, label(text, h, PO(o))); }
+  const frameIcon = name => () => frameURL(name);
+
+  // ----- view tab: the editor's view toggles (pink = on, grey = off) -----
+  const viewState = { preview: false, hitbox: false, invis: false, ldm: false, anims: true, particle: true, shader: false, ground: true, oinfo: false, grid: true, filter: false,
+    ignore: false, effect: true, dur: true, song: false, bpm: false, kframe: true, m1: false, m2: false, m3: false, tin: false, tout: false };
+  const setters = {
+    preview: v => { tl.pv = v; if ($('tlPv')) $('tlPv').checked = v; tl.cacheX = null; draw(); },
+    shader: v => { tl.pv = v; if ($('tlPv')) $('tlPv').checked = v; tl.cacheX = null; draw(); },
+    invis: v => { opt.trig = !v; if ($('tTrig')) $('tTrig').checked = !v; draw(); },
+    ldm: v => { opt.deco = !v; if ($('tDeco')) $('tDeco').checked = !v; draw(); },
+    ground: v => { opt.bg = v; if ($('tBg')) $('tBg').checked = v; draw(); },
+    grid: v => { opt.grid = v; if ($('tGrid')) $('tGrid').checked = v; draw(); }
+  };
+  const VIEW1 = [['preview', 'edit_previewModeBtn', 'Preview mode (moving, rotating, fading, camera and shader triggers)'], ['hitbox', 'edit_hitboxesBtn', 'Hitboxes'],
+    ['invis', 'edit_showHiddenBtn', 'Hide invisible objects (triggers)'], ['ldm', 'edit_LDMBtn', 'Low detail mode (hides decoration)'], ['anims', 'edit_animsBtn', 'Animations'],
+    ['particle', 'edit_particlesBtn', 'Particles'], ['shader', 'edit_shadersBtn', 'Shaders (same as preview mode)'], ['ground', 'edit_groundBtn', 'Level background and ground'],
+    ['oinfo', 'edit_objInfoBtn', 'Object info'], ['grid', 'edit_gridBtn', 'Grid'], ['filter', 'edit_selectFilterBtn', 'Select filter']];
+  const VIEW2 = [['ignore', 'edit_ignoreDamageBtn', 'Ignore damage'], ['effect', 'edit_durationLinesBtn', 'Effect lines'], ['dur', 'edit_durationLinesBtn', 'Duration lines'],
+    ['song', 'edit_songLinesBtn', 'Song lines'], ['bpm', 'edit_bpmLinesBtn', 'BPM lines'], ['kframe', 'edit_keyframeLinesBtn', 'Keyframe lines'],
+    ['m1', null, ''], ['m2', null, ''], ['m3', null, ''], ['tin', 'edit_traceInBtn', 'Trace in'], ['tout', 'edit_traceOutBtn', 'Trace out']];
+  const viewBtns = {};
+  const MARK = {
+    m1: '<svg viewBox="0 0 40 40"><path d="M10 10L30 30M30 10L10 30" stroke="#fff" stroke-width="6" stroke-linecap="round"/></svg>',
+    m2: '<svg viewBox="0 0 40 40"><path d="M10 10L30 30M30 10L10 30" stroke="#ff8a2a" stroke-width="6" stroke-linecap="round"/></svg>',
+    m3: '<svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="11" fill="#fff"/></svg>'
+  };
+  function viewBtn(row, i, [id, icon, title]) {
+    const o = { cx: 387 + i * 114.4, cy: row ? 980 : 868, w: 108, h: 108 };
+    const b = paneSquare('view', 'GJ_button_04', DARK, o, icon ? frameIcon(icon + '_001.png') : null, () => { viewState[id] = !viewState[id]; if (setters[id]) setters[id](viewState[id]); paintView(); }, title);
+    if (!icon && MARK[id]) { const d = document.createElement('div'); d.style.cssText = 'position:absolute;inset:16%;pointer-events:none'; d.innerHTML = MARK[id]; b.appendChild(d); }
+    viewBtns[id] = b;
+  }
+  VIEW1.forEach((v, i) => viewBtn(0, i, v));
+  VIEW2.forEach((v, i) => viewBtn(1, i, v));
+  function paintView() {
+    for (const id in viewBtns) {
+      const on = !!viewState[id];
+      recolor(viewBtns[id], on ? 'GJ_button_03' : 'GJ_button_04', on ? null : DARK);
+    }
+  }
+  { const infoI = inPane('delete', put(mk('div', 'a hid'), PO({ cx: 1483, cy: 818, w: 46, h: 46 }))); infoI.style.pointerEvents = 'none'; const ii = infoI.appendChild(img()); ii.style.cssText = 'width:100%;height:100%;object-fit:contain'; live(ii, frameIcon(FR.info)); }
+
+  // ----- delete tab -----
+  const delAct = () => act('del');
+  paneSquare('delete', 'GJ_button_04', DARK, { cx: 545, cy: 850, w: 124, h: 124 }, frameIcon(FR.del2), delAct, 'Delete the selected objects');
+  paneSquare('delete', 'GJ_button_04', DARK, { cx: 545, cy: 985, w: 124, h: 124 }, frameIcon(FR.delAll), () => act('selId'), 'Select every object with the same ID, then press delete');
+  { const b = paneSquare('delete', 'GJ_button_04', DARK, { cx: 680, cy: 850, w: 124, h: 124 }, null, null, 'Delete all start positions');
+    const t1 = img(); t1.className = 'tx'; t1.style.cssText = 'position:absolute;left:12%;top:12%;width:76%;height:26%;object-fit:contain'; b.appendChild(t1); live(t1, () => textURL('All', Math.round(40 * S.k)));
+    const t2 = img(); t2.className = 'tx'; t2.style.cssText = 'position:absolute;left:8%;top:40%;width:84%;height:50%;object-fit:contain'; b.appendChild(t2); live(t2, () => textURL('Start Pos', Math.round(40 * S.k)));
+    b.onclick = () => { const sp = level.objs.filter(o => o.id === 31 || o.id === 34); if (sp.length) { setSel(sp); act('del'); } }; }
+  [['f', 937, 850, FR.find], ['f2', 937, 985, FR.del2]].forEach(([k, cx, cy, ic]) => paneSquare('delete', 'GJ_button_04', DARK, { cx, cy, w: 124, h: 124 }, frameIcon(ic), null, 'Search for a group'));
+  [1066, 1066].forEach((cx, i) => { const b = paneSquare('delete', 'GJ_button_04', DARK, { cx, cy: i ? 985 : 850, w: 124, h: 124 }, null, null, 'Group number'); const t = img(); t.className = 'tx'; t.style.cssText = 'position:absolute;left:25%;top:22%;width:50%;height:56%;object-fit:contain'; b.appendChild(t); live(t, () => textURL('0', Math.round(60 * S.k))); });
+  const SLASH = '<svg viewBox="0 0 60 60"><circle cx="30" cy="30" r="19" fill="none" stroke="#ff3a30" stroke-width="7"/><path d="M17 43L43 17" stroke="#ff3a30" stroke-width="7"/></svg>';
+  const filt = {};
+  [['none', 'None', 1206, 850], ['static', 'Static', 1341, 850], ['details', 'Details', 1206, 985], ['custom', 'Custom', 1341, 985]].forEach(([id, text, cx, cy]) => {
+    const b = paneSquare('delete', id === 'none' ? 'GJ_button_02' : 'GJ_button_04', id === 'none' ? null : DARK, { cx, cy, w: 124, h: 124 }, null, () => { S.filter = id; for (const k in filt) recolor(filt[k], k === id ? 'GJ_button_02' : 'GJ_button_04', k === id ? null : DARK); }, text + ' filter');
+    const d = document.createElement('div'); d.style.cssText = 'position:absolute;left:24%;top:30%;width:52%;height:52%;pointer-events:none'; d.innerHTML = SLASH; b.appendChild(d);
+    const t = img(); t.className = 'tx'; t.style.cssText = 'position:absolute;left:8%;top:8%;width:84%;height:28%;object-fit:contain'; b.appendChild(t); live(t, () => textURL(text, Math.round(36 * S.k)));
+    filt[id] = b;
+  });
+
+  // ----- edit tab -----
+  S.step = 1;
+  const STEPS = [8, 4, 2, 1, 0.5, 0.25, 0.125, 1 / 16, 1 / 30];
+  const STEP_IC = [['edit_upBtn3', 'ffffff'], ['edit_upBtn2', 'ffffff'], ['edit_upBtn', 'ff7bd0'], ['edit_upBtn5', 'ffffff'], ['edit_upBtn5', 'ffffff'], ['edit_upBtn5', 'ffffff'],
+    ['edit_upBtn', 'ffd400'], ['edit_upBtn', 'ffd400'], ['edit_upBtn', 'ffd400']];
+  const stepBtns = [];
+  const stepText = inPane('edit', label('1', 46, PO({ cx: 517, cy: 925, w: 80 })));
+  function moveBy(dx, dy) {
+    const sel = selList(); if (!sel.length) return;
+    pushOp(opMove(sel.map(o => ({ o, from: [o.x, o.y], to: [o.x + dx, o.y + dy] }))));
+  }
+  function setStep(i) {
+    S.step = STEPS[i];
+    stepBtns.forEach((b, j) => recolor(b, j === i ? 'GJ_button_02' : 'GJ_button_04', j === i ? null : GREY));
+    const v = S.step;
+    stepText.src = textURL(v >= 1 ? String(v) : (v === 0.5 ? '1/2' : v === 0.25 ? '1/4' : v === 0.125 ? '1/8' : v > 0.05 ? '1/16' : '1/30'), Math.round(60 * S.k));
+    stepText._v = v;
+  }
+  [[518, 838, -90, 'up'], [518, 1010, 90, 'down'], [400, 925, 0, 'left'], [636, 925, 180, 'right']].forEach(([cx, cy, rot, dir]) => {
+    const b = inPane('edit', put(mk('button', 'a rb hid'), PO({ cx, cy, w: 112, h: 112 })));
+    const i = b.appendChild(img()); i.style.transform = `rotate(${rot}deg)`; live(i, frameIcon(FR.earrow));
+    b.title = 'Move ' + dir;
+    b.onclick = () => { const d = 30 * S.step; moveBy(dir === 'left' ? -d : dir === 'right' ? d : 0, dir === 'up' ? d : dir === 'down' ? -d : 0); };
+  });
+  STEPS.forEach((v, i) => {
+    const cx = 790 + (i % 3) * 114.5, cy = [828, 922, 1016][Math.floor(i / 3)];
+    const [ic, hex] = STEP_IC[i];
+    const b = paneSquare('edit', 'GJ_button_04', GREY, { cx, cy, w: 104, h: 90 }, () => frameURL(ic + '_001.png', hex), () => setStep(i), 'Move step: ' + (v >= 1 ? v + ' block(s)' : '1/' + Math.round(1 / v) + ' block'));
+    stepBtns.push(b);
+  });
+  const rot = (d) => () => { const sel = selList(); if (!sel.length) return; pushOp(opProps(sel, o => { o.rot = ((o.rot + d) % 360 + 360) % 360; }, 'rotate')); };
+  const scl = (f) => () => { const sel = selList(); if (!sel.length) return; pushOp(opProps(sel, o => { o.sx *= f; o.sy *= f; o.scaleDirty = true; }, 'scale')); };
+  const XF = [
+    ['edit_flipXBtn', () => act('flipX'), 'Flip horizontally'], ['edit_flipYBtn', () => act('flipY'), 'Flip vertically'], ['edit_cwBtn', rot(90), 'Rotate 90° clockwise'], ['edit_ccwBtn', rot(-90), 'Rotate 90° counter-clockwise'],
+    ['edit_rotate45rBtn', rot(45), 'Rotate 45° clockwise'], ['edit_rotate45lBtn', rot(-45), 'Rotate 45° counter-clockwise'], ['edit_freeRotateBtn', rot(15), 'Rotate 15° clockwise'], ['edit_rotateSnapBtn', rot(-15), 'Rotate 15° counter-clockwise'],
+    ['edit_scaleBtn', scl(1.25), 'Bigger (x1.25)'], ['edit_scaleXYBtn', scl(0.8), 'Smaller (÷1.25)'], ['edit_warpBtn', null, 'Warp (not available)']
+  ];
+  XF.forEach(([ic, fn, title], i) => {
+    const cx = 1174 + (i % 4) * 114.5, cy = [828, 922, 1016][Math.floor(i / 4)];
+    paneSquare('edit', 'GJ_button_01', null, { cx, cy, w: 104, h: 90 }, frameIcon(ic + '_001.png'), fn, title);
+  });
+
+  // ----- build tab -----
+  const CATS = [
+    ['Blocks', 'square_01_001.png'], ['Outlines', 'blockOutline_01_001.png'], ['Slopes', 'triangle_a_04_001.png'], ['Spikes', 'spike_01_001.png'], ['Slabs and planks', 'plank_01_slope_02_001.png'],
+    ['Gameplay objects', 'ring_01_001.png'], ['Animated objects', 'GJBeast01_01_001.png'], ['Pixel art', 'pixelb_03_01_001.png'], ['Items', 'd_link_b_06_001.png'],
+    ['Decorations', 'persp_block009_05b_001.png'], ['Pulsing objects', 'd_cartwheel_01_001.png'], ['Rotating objects', 'sawblade_02_001.png'], ['Triggers', 'edit_eTintCol01Btn_001.png'], ['In this level', null]
+  ];
+  UI_FRAMES.push(...CATS.map(c => c[1]).filter(Boolean));
+  let NAMES = {};
+  fetch('assets/objects.json').then(r => (r.ok ? r.json() : {})).then(j => { NAMES = j; }).catch(() => {});
+  // the editor's own lists, read from the game (13 tabs of object IDs in the order the editor builds them)
+  let TABLISTS = null;
+  fetch('assets/tabs.json').then(r => (r.ok ? r.json() : null)).then(j => { if (j) { TABLISTS = j; buildCats(); paintBuild(); } }).catch(() => {});
+  let catIds = null;
+  function buildCats() { catIds = CATS.map((c, i) => (TABLISTS && i < TABLISTS.length ? TABLISTS[i].ids : [])); }  function levelIds() {
+    if (!level) return [];
+    const counts = new Map();
+    for (const o of level.objs) counts.set(o.id, (counts.get(o.id) || 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]);
+  }
+  S.cat = 0; S.page = 0; S.buildSel = null;
+  const catTabs = [], cells = [], PER = 24;
+  CATS.forEach(([title, frame], i) => {
+    const b = put(mk('button', 'a tb hid'), PO({ cx: 213 + i * 114.4, cy: 745, w: 108, h: 74 }));
+    b.style.background = 'none';
+    const bg = img(); bg.className = 'ic'; b.appendChild(bg); live(bg, frameIcon(i === S.cat ? FR.tabOn : FR.tabOff));
+    const ic = img(); ic.className = 'ic'; ic.style.cssText = 'position:absolute;left:10%;top:6%;width:80%;height:84%;object-fit:contain'; b.appendChild(ic);
+    if (frame) live(ic, () => (frame.startsWith('edit_') ? frameURL(frame) : thumbURL(frame, 64)));
+    else live(ic, () => textURL('C', Math.round(60 * S.k)));
+    b.title = title; b._bg = bg;
+    b.onclick = () => { S.cat = i; S.page = 0; paintBuild(); };
+    inPane('build', b); catTabs.push(b);
+  });
+  function thumbURL(frame, max) {
+    const key = 'thumb|' + frame + max + assetQuality;
+    if (urlCache.has(key)) return urlCache.get(key);
+    const c = frameCanvas(frame);
+    if (!c) return '';
+    const o = document.createElement('canvas'); o.width = o.height = max * 2;
+    const g = o.getContext('2d'); const s = Math.min(o.width / c.width, o.height / c.height, 3);
+    g.drawImage(c, (o.width - c.width * s) / 2, (o.height - c.height * s) / 2, c.width * s, c.height * s);
+    const u = o.toDataURL('image/png'); urlCache.set(key, u); return u;
+  }
+  function idThumbURL(id) {
+    const key = 'idthumb|' + id + assetQuality;
+    if (urlCache.has(key)) return urlCache.get(key);
+    const th = spriteThumb(id, 76);
+    if (!th) return '';
+    const u = th.toDataURL('image/png'); urlCache.set(key, u); return u;
+  }
+  for (let i = 0; i < PER; i++) {
+    const cx = 469 + (i % 12) * 89.1, cy = i < 12 ? 865 : 955;
+    const b = paneSquare('build', 'GJ_button_04', '3a3a40', { cx, cy, w: 84, h: 84 }, null, null, '');
+    const im = img(); im.className = 'ic'; im.style.cssText = 'position:absolute;left:5%;top:5%;width:90%;height:90%;object-fit:contain'; b.appendChild(im);
+    b._im = im; b.onclick = () => pickObject(b._id);
+    cells.push(b);
+  }
+  const pageL = inPane('build', put(mk('button', 'a rb hid'), PO({ cx: 378, cy: 910, w: 60, h: 78 })));
+  live(pageL.appendChild(img()), frameIcon(FR.arrow2)); pageL.onclick = () => { if (S.page > 0) { S.page--; paintBuild(); } };
+  const pageR = inPane('build', put(mk('button', 'a rb hid'), PO({ cx: 1540, cy: 910, w: 60, h: 78 })));
+  { const i = img(); i.style.transform = 'scaleX(-1)'; pageR.appendChild(i); live(i, frameIcon(FR.arrow2)); } pageR.onclick = () => { S.page++; paintBuild(); };
+  const dots = [];
+  function pickObject(id) {
+    if (id === undefined || id === null) return;
+    if (S.cat === 13) { highlight = highlight === id ? null : id; renderUi(lastName); draw(); }
+    S.buildSel = S.buildSel === id ? null : id;
+    paintBuild();
+  }
+  function paintBuild() {
+    if (!catIds) buildCats();
+    const list = S.cat === 13 ? levelIds() : catIds[S.cat];
+    const pages = Math.max(1, Math.ceil(list.length / PER));
+    S.page = Math.max(0, Math.min(pages - 1, S.page));
+    catTabs.forEach((b, i) => { const u = frameURL(i === S.cat ? FR.tabOn : FR.tabOff); if (u) b._bg.src = u; b._bg.dataset.on = i === S.cat ? '1' : ''; });
+    S.images = S.images.filter(r => !(r.i && catTabs.some(b => b._bg === r.i)));
+    catTabs.forEach((b, i) => S.images.push({ i: b._bg, getter: () => frameURL(i === S.cat ? FR.tabOn : FR.tabOff) }));
+    cells.forEach((b, i) => {
+      const id = list[S.page * PER + i];
+      b._id = id;
+      b.style.visibility = id === undefined ? 'hidden' : 'visible';
+      if (id !== undefined) {
+        b.title = (NAMES[id] || ID_FRAMES[id] || 'object ' + id) + '  (' + id + ')';
+        const u = idThumbURL(id); b._im.src = u || 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+        const bgv = TABLISTS && S.cat < TABLISTS.length ? TABLISTS[S.cat].bg[String(id)] : 4;
+        recolor(b, id === S.buildSel ? 'GJ_button_02' : (bgv === 5 ? 'GJ_button_05' : 'GJ_button_04'), id === S.buildSel ? null : (bgv === 5 ? '8a93ad' : '3a3a40'));
+      }
+    });
+    pageL.style.opacity = S.page > 0 ? 1 : 0.35; pageR.style.opacity = S.page < pages - 1 ? 1 : 0.35;
+    dots.forEach(d => d.remove()); dots.length = 0;
+    for (let i = 0; i < Math.min(pages, 36); i++) {
+      const d = put(mk('div', 'dot hid'), PO({ cx: 30 + i * 52, cy: 1070, w: i === S.page ? 12 : 8, h: i === S.page ? 12 : 8 }));
+      d.style.background = i === S.page ? '#cfcfcf' : '#6a6a6a'; d.style.display = S.tab === 'build' ? '' : 'none'; dots.push(d);
+    }
+  }
+  S.paintBuild = paintBuild;
+
+  // placing an object from the Build tab: tap an empty spot in the view
+  function newObject(id, x, y) {
+    const L = parseLevel('kA4,0;1,' + id + ',2,' + x + ',3,' + y + ';');
+    const o = L.objs[0]; o.idx = level.nextIdx++; o.dirty = true; o.src = null;
+    return o;
+  }
+  let down = null;
+  canvas.addEventListener('pointerdown', e => { down = [e.clientX, e.clientY]; }, true);
+  canvas.addEventListener('pointerup', e => {
+    if (!down || S.tab !== 'build' || S.buildSel === null || !level || (window.play && window.play.active)) { down = null; return; }
+    const moved = Math.hypot(e.clientX - down[0], e.clientY - down[1]); down = null;
+    if (moved > 5) return;
+    const r = canvas.getBoundingClientRect();
+    const [wx, wy] = toWorld(e.clientX - r.left, e.clientY - r.top);
+    const x = Math.round((wx - 15) / 30) * 30 + 15, y = Math.round((wy - 15) / 30) * 30 + 15;
+    const o = newObject(S.buildSel, x, y);
+    e.stopImmediatePropagation();
+    pushOp(opAdd([o]), [o]);
+  }, true);
+
+  // ----- right grid: copy and paste -----
+  rp.copy.onclick = () => { const s = selList(); if (s.length) { S.clip = s.map(o => ({ id: o.id, x: o.x, y: o.y, fields: o.fields.slice() })); refresh(); } };
+  rp.dup.onclick = () => act('dup');
+  rp.desel.onclick = () => act('clear');
+  rp.paste.onclick = () => {
+    if (!S.clip) return;
+    const [cx, cy] = [view.cx, view.cy];
+    const minx = Math.min(...S.clip.map(c => c.x)), miny = Math.min(...S.clip.map(c => c.y));
+    const objs = S.clip.map(c => {
+      const o = newObject(c.id, Math.round((cx + (c.x - minx)) / 30) * 30 + 15, Math.round((cy + (c.y - miny)) / 30) * 30 + 15);
+      return o;
+    });
+    pushOp(opAdd(objs), objs);
+  };
+
+  // ---------- the scroll slider ----------
+  const track = top.track;
+  function slideTo(clientX) {
+    if (!level) return;
+    const r = track.getBoundingClientRect();
+    const t = Math.max(0, Math.min(1, (clientX - r.left) / Math.max(1, r.width)));
+    const m = timelineModel();
+    view.cx = t * m.maxX; draw();
+  }
+  let sliding = false;
+  const startSlide = e => { sliding = true; slideTo(e.clientX); e.preventDefault(); };
+  top.thumb.addEventListener('pointerdown', startSlide); track.addEventListener('pointerdown', startSlide);
+  addEventListener('pointermove', e => { if (sliding) slideTo(e.clientX); });
+  addEventListener('pointerup', () => { sliding = false; });
+  function syncSlider() {
+    if (!level) return;
+    const m = timelineModel(), t = Math.max(0, Math.min(1, view.cx / m.maxX));
+    const r = track.getBoundingClientRect(), a = $('app').getBoundingClientRect();
+    const x = (r.left - a.left) + t * r.width;
+    top.thumb.style.left = (x - top.thumb.offsetWidth / 2) + 'px'; top.thumb.style.right = '';
+  }
+
+  // ----- the right-hand toggles also change how dragging behaves -----
+  function setShellTab(id) {
+    S.tab = id;
+    for (const t in tabs) recolor(tabs[t], t === id ? 'GJ_button_02' : 'GJ_button_04', t === id ? null : GREY);
+    for (const p in panes) for (const e of panes[p]) e.style.display = p === id ? '' : 'none';
+    if (typeof setTab === 'function') setTab(id === 'view' ? 'build' : id);
+    if (typeof editMode !== 'undefined') editMode = id === 'edit';
+    if (id === 'build') paintBuild();
+    dots.forEach(d => { d.style.display = id === 'build' ? '' : 'none'; });
+    paintView();
+    setStep(3);
+    refresh();
+  }
+
+  // ---------- keeping the picture in sync ----------
+  function refresh() {
+    for (const r of S.images) {
+      const u = r.getter();
+      if (!u) continue;
+      if (r.i) { if (r.i.getAttribute('src') !== u) r.i.src = u; }
+      else if (r.b && r.apply && r.b._lastU !== u) { r.b._lastU = u; r.apply(u); }
+    }
+    const sel = (typeof selList === 'function' ? selList() : []).length;
+    for (const k of ['copy', 'dup', 'desel']) rp[k].classList.toggle('dim', !sel);
+    rp.paste.classList.toggle('dim', !S.clip);
+    top.trash.classList.toggle('off', !sel);
+    top.undo.classList.toggle('off', !(hist && hist.undo.length));
+    top.redo.classList.toggle('off', !(hist && hist.redo.length));
+    top.thumb.style.pointerEvents = 'auto';
+    syncSlider();
+  }
+  function layout() {
+    const w = $('app').clientWidth, h = $('app').clientHeight;
+    S.k = Math.min(w / DW, h / DH);
+    root.style.setProperty('--k', S.k + 'px');
+    const st = $('stage');
+    st.style.flex = 'none'; st.style.height = Math.max(120, h - BAR * S.k) + 'px';
+    if (typeof resize === 'function') resize();
+    refresh();
+  }
+  // the frame counter in the corner
+  let frames = 0, last = performance.now();
+  (function tick() { frames++; const n = performance.now(); if (n - last > 500) { fps.textContent = 'FPS: ' + Math.round(frames * 1000 / (n - last)); frames = 0; last = n; } requestAnimationFrame(tick); })();
+  addEventListener('resize', layout);
+  const _sheetReady = onSheetReady;
+  onSheetReady = function () { _sheetReady(); setTimeout(() => { buildCats(); paintBuild(); refresh(); }, 200); };
+  const _renderUi = renderUi;
+  renderUi = function (n) { _renderUi(n); if (S.cat === 13) paintBuild(); refresh(); };
+  const _draw = draw;
+  draw = function () { _draw(); try { syncSlider(); } catch (e) { /* cosmetic */ } };
+  setTimeout(() => { layout(); applyToggles(); setShellTab('build'); }, 0);
+  setInterval(refresh, 700);
+  window.shellApi = { refresh, layout, setShellTab, S, paintBuild, frameURL, baseURL, textURL, cropURL };
+})();
+</script>
+
+<script>
+"use strict";
+// ================= the editor's pause menu and level settings pop-ups =================
+(function dialogs() {
+  const DW = 1917, DH = 1078;
+  const A = window.shellApi;
+  const { frameURL, baseURL } = A;
+  const FRAMES = ['GJ_sSettingsIcon_001.png', 'GJ_sExportIcon_001.png', 'GJ_sSFXIcon_001.png', 'GJ_sSaveIcon_001.png', 'GJ_sMarkerIcon_001.png', 'GJ_sAudioDLIcon_001.png',
+    'GJ_sHelpIcon_001.png', 'GJ_colorBtn_001.png', 'GJ_plus2Btn_001.png', 'GJ_plus3Btn_001.png', 'GJ_optionsBtn_001.png', 'GJ_arrow_01_001.png', 'GJ_playMusicBtn_001.png',
+    'boost_01_001.png', 'boost_02_001.png', 'boost_03_001.png', 'boost_04_001.png', 'boost_05_001.png'];
+  const MODES = ['icon', 'ship', 'ball', 'bird', 'dart', 'robot', 'spider', 'swing'].flatMap(m => [`gj_${m}Btn_on_001.png`, `gj_${m}Btn_off_001.png`]);
+  const BGI = Array.from({ length: 59 }, (_, i) => `bgIcon_${String(i + 1).padStart(2, '0')}_001.png`);
+  const GI = Array.from({ length: 22 }, (_, i) => `gIcon_${String(i + 1).padStart(2, '0')}_001.png`);
+  UI_FRAMES.push(...FRAMES, ...MODES, ...BGI, ...GI, 'mgIcon_00_001.png', 'mgIcon_01_001.png', 'mgIcon_02_001.png', 'mgIcon_03_001.png');
+
+  // ---------- the gold font (used by the editor for titles and button text) ----------
+  const gold = { chars: null, img: null, lineH: 0, ready: false, loading: false };
+  async function loadGold() {
+    if (gold.ready || gold.loading) return;
+    gold.loading = true;
+    try {
+      for (const q of (assetQuality === 'uhd' ? ['uhd', 'hd', ''] : ['hd', 'uhd', ''])) {
+        const sfx = q ? '-' + q : '';
+        const fnt = await fetchAnyFile([`goldFont${sfx}.fnt`]), png = fnt && await fetchAnyFile([`goldFont${sfx}.png`]);
+        if (!fnt || !png) continue;
+        const txt = await fnt.text(), common = /common\s+lineHeight=(\d+)/.exec(txt), chars = {};
+        const re = /char id=(\d+)\s+x=(\d+)\s+y=(\d+)\s+width=(\d+)\s+height=(\d+)\s+xoffset=(-?\d+)\s+yoffset=(-?\d+)\s+xadvance=(-?\d+)/g;
+        let m;
+        while ((m = re.exec(txt))) chars[+m[1]] = { x: +m[2], y: +m[3], w: +m[4], h: +m[5], xo: +m[6], yo: +m[7], xa: +m[8] };
+        gold.chars = chars; gold.lineH = common ? +common[1] : 60; gold.img = await createImageBitmap(png); gold.ready = true;
+        break;
+      }
+    } catch (e) { /* the white font is used instead */ }
+    gold.loading = false;
+    if (gold.ready) repaint();
+  }
+  loadGold();
+  const textCache = new Map();
+  // text drawn with one of the game's bitmap fonts, as an image whose line height is `h` pixels
+  function textImg(fontName, text, h) {
+    const f = fontName === 'gold' && gold.ready ? gold : (bmfont.ready ? bmfont : null);
+    if (!f) return '';
+    const key = (f === gold ? 'g|' : 'b|') + text + '|' + h;
+    if (textCache.has(key)) return textCache.get(key);
+    const s = h / f.lineH;
+    let w = 0; for (const ch of text) { const c = f.chars[ch.charCodeAt(0)]; if (c) w += c.xa; }
+    const pad = Math.ceil(6 * Math.max(1, s * 2));
+    const cv = document.createElement('canvas'); cv.width = Math.max(1, Math.ceil(w * s) + pad * 2); cv.height = Math.ceil(h * 1.25) + pad * 2;
+    const g = cv.getContext('2d');
+    let x = pad;
+    for (const ch of text) {
+      const c = f.chars[ch.charCodeAt(0)]; if (!c) continue;
+      g.drawImage(f.img, c.x, c.y, c.w, c.h, x + c.xo * s, pad + c.yo * s, c.w * s, c.h * s);
+      x += c.xa * s;
+    }
+    const u = cv.toDataURL('image/png'); textCache.set(key, u); return u;
+  }
+
+  // ---------- header values (the level's own settings) ----------
+  const hdrGet = k => { const m = new RegExp('(?:^|,)' + k + ',([^,;]*)').exec(level.header || ''); return m ? m[1] : ''; };
+  function hdrSet(k, v) {
+    const re = new RegExp('((?:^|,)' + k + ',)([^,;]*)');
+    level.header = re.test(level.header) ? level.header.replace(re, '$1' + v) : level.header + ',' + k + ',' + v;
+    level.edited = true; tl.cacheX = null; if (typeof draw === 'function') draw();
+  }
+
+  // ---------- the overlay and its building blocks ----------
+  const root = document.createElement('div');
+  root.id = 'dlg';
+  $('app').appendChild(root);
+  const css = document.createElement('style');
+  css.textContent = `
+    #dlg{position:absolute;inset:0;z-index:40;display:none;background:rgba(0,0,0,.6);--k:1px;user-select:none;-webkit-user-select:none}
+    #dlg.on{display:block}
+    #dlg .a{position:absolute}
+    #dlg button{padding:0;border:0;background:none;cursor:pointer;display:block;font:inherit;color:#fff}
+    #dlg .nine{border-style:solid;border-image-repeat:stretch}
+    #dlg img{display:block;pointer-events:none}
+    #dlg .press:active{transform:scale(.95)}
+    #dlg .sl{position:absolute;height:calc(26*var(--k));border:calc(4*var(--k)) solid #2b2100;border-radius:calc(20*var(--k));background:linear-gradient(180deg,#41d7ff,#0a86d6)}
+    #dlg .kn{position:absolute;width:calc(46*var(--k));height:calc(46*var(--k));border-radius:50%;background:radial-gradient(circle at 35% 30%,#ffe27a,#c58a1a);border:calc(4*var(--k)) solid #2b2100;transform:translate(-50%,-50%)}
+  `;
+  document.head.appendChild(css);
+  let imgs = [];
+  function put(e, { cx, cy, w, h }, rel) {
+    e.style.width = `calc(${w} * var(--k))`; e.style.height = `calc(${h} * var(--k))`;
+    e.style.left = `calc(50% + ${cx - DW / 2 - w / 2} * var(--k))`; e.style.top = `calc(50% + ${cy - DH / 2 - h / 2} * var(--k))`;
+    return e;
+  }
+  function mk(tag, cls, parent) { const e = document.createElement(tag); if (cls) e.className = cls; (parent || root).appendChild(e); return e; }
+  function live(i, getter) { imgs.push({ i, getter }); const u = getter(); if (u) i.src = u; return i; }
+  function txt(parent, font, text, h, o, align) {
+    const i = mk('img', 'a', parent); put(i, Object.assign({ w: 10, h: h * 1.3 }, o));
+    i.style.objectFit = 'contain'; i.style.objectPosition = align || 'center';
+    live(i, () => textImg(font, text, Math.max(10, Math.round(h * A.S.k * 1.5)))); return i;
+  }
+  function frame(parent, name, o, css) { const i = mk('img', 'a', parent); put(i, o); i.style.objectFit = 'contain'; if (css) i.style.cssText += css; live(i, () => frameURL(name)); return i; }
+  function nine(parent, base, hex, o, slice, bw) {
+    const e = mk('div', 'a nine', parent); put(e, o);
+    e.style.borderWidth = `calc(${bw} * var(--k))`; e.style.borderImageSlice = slice + '% fill';
+    imgs.push({ b: e, getter: () => baseURL(base, hex) });
+    const u = baseURL(base, hex); if (u) e.style.borderImageSource = `url(${u})`;
+    return e;
+  }
+  function nbtn(parent, base, hex, o, onclick, text, font, th) {
+    const b = mk('button', 'a press', parent); put(b, o);
+    const bgd = nine(b, base, hex, { cx: 0, cy: 0, w: o.w, h: o.h }, 36, Math.round(Math.min(o.w, o.h) * 0.3));
+    bgd.style.left = '0'; bgd.style.top = '0'; bgd.style.width = '100%'; bgd.style.height = '100%'; bgd.style.boxSizing = 'border-box';
+    if (text) { const t = mk('img', 'a', b); t.style.cssText = 'left:6%;top:12%;width:88%;height:70%;object-fit:contain'; live(t, () => textImg(font || 'gold', text, Math.max(10, Math.round((th || o.h * 0.6) * A.S.k * 1.5)))); }
+    if (onclick) b.onclick = onclick;
+    return b;
+  }
+  function repaint() {
+    for (const r of imgs) {
+      const u = r.getter(); if (!u) continue;
+      if (r.i) { if (r.i.getAttribute('src') !== u) r.i.src = u; } else if (r.b && r.b._u !== u) { r.b._u = u; r.b.style.borderImageSource = `url(${u})`; }
+    }
+  }
+  function clear() { root.innerHTML = ''; imgs = []; }
+  function open(build) {
+    clear(); root.classList.add('on'); root.style.setProperty('--k', A.S.k + 'px');
+    build(); repaint();
+  }
+  function close() { root.classList.remove('on'); clear(); stack.length = 0; }
+  const stack = [];
+  function openOver(build) { stack.push(current); current = build; open(build); }
+  let current = null;
+  const back = () => { current = stack.pop() || null; if (current) open(current); else close(); };
+  setInterval(() => { if (root.classList.contains('on')) { root.style.setProperty('--k', A.S.k + 'px'); repaint(); } }, 500);
+
+  // ---------- the pause menu ----------
+  const LEVEL_NAMES = ['Stereo Madness', 'Back On Track', 'Polargeist', 'Dry Out', 'Base After Base', "Can't Let Go", 'Jumper', 'Time Machine', 'Cycles', 'xStep', 'Clutterfunk',
+    'Theory of Everything', 'Electroman Adventures', 'Clubstep', 'Electrodynamix', 'Hexagon Force', 'Blast Processing', 'Theory of Everything 2', 'Geometrical Dominator', 'Deadlocked', 'Fingerdash', 'Dash'];
+  function lengthLabel() {
+    if (!level) return '';
+    const s = Math.round(timelineModel().tOf(timelineModel().maxX));
+    const cls = s <= 10 ? 'Tiny' : s <= 30 ? 'Short' : s <= 60 ? 'Medium' : s <= 120 ? 'Long' : 'XL';
+    return `Length: ${s} seconds (${cls})`;
+  }
+  function pauseMenu() {
+    txt(root, 'gold', 'Objects: ' + (level ? level.objs.length : 0) + '/40000', 36, { cx: 210 - 0, cy: 40, w: 420 }, 'left center'); root.lastChild.style.left = 'calc(50% + ' + (35 - DW / 2) + ' * var(--k))';
+    txt(root, 'gold', lengthLabel(), 36, { cx: 300, cy: 108, w: 560 }, 'left center'); root.lastChild.style.left = 'calc(50% + ' + (35 - DW / 2) + ' * var(--k))';
+    const items = [['Resume', 255, close], ['Save and Play', 398, () => { close(); if (window.startPlay) startPlay(); }], ['Save and Exit', 540, () => { saveThenExit(); }],
+      ['Save', 682, () => { if (typeof saveLevel === 'function') saveLevel(); }], ['Exit', 823, exitToStart]];
+    for (const [t, y, fn] of items) nbtn(root, 'GJ_button_01', null, { cx: 960, cy: y, w: 660, h: 96 }, fn, t, 'gold', 64);
+    const side = [['Settings', 'GJ_sSettingsIcon_001.png', 67, () => openOver(settingsDialog)], ['Export', 'GJ_sExportIcon_001.png', 175, () => { if (typeof saveLevel === 'function') saveLevel(); }],
+      ['Editor SFX', 'GJ_sSFXIcon_001.png', 282, null], ['Auto-Save', 'GJ_sSaveIcon_001.png', 390, null], ['Death Stats', 'GJ_sMarkerIcon_001.png', 498, null],
+      ['Get Audio', 'GJ_sAudioDLIcon_001.png', 606, () => { close(); $('menu').classList.add('on'); }], ['Help', 'GJ_sHelpIcon_001.png', 715, () => window.open('https://store.steampowered.com/app/322170/Geometry_Dash/', '_blank')]];
+    for (const [t, ic, y, fn] of side) {
+      const b = nbtn(root, 'GJ_button_05', '5b6785', { cx: 1750, cy: y, w: 286, h: 92 }, fn, null);
+      b.style.left = `calc(100% - ${(DW - 1750 + 143)} * var(--k))`; b.style.top = `calc(${y - 46} * var(--k))`;
+      const lab = mk('img', 'a', b); lab.style.cssText = 'left:7%;top:20%;width:62%;height:60%;object-fit:contain;object-position:left center'; live(lab, () => textImg('big', t, Math.round(58 * A.S.k)));
+      const ico = mk('img', 'a', b); ico.style.cssText = 'right:5%;top:12%;width:26%;height:76%;object-fit:contain'; live(ico, () => frameURL(ic));
+    }
+    // volume sliders (the music one is real; the others only remember their position)
+    const sl = [['Music', 230, 625, 418, 'music'], ['SFX', 770, 1150, 958, 'sfx'], ['Editor SFX', 1310, 1690, 1497, 'esfx']];
+    for (const [t, x0, x1, lx, key] of sl) {
+      txt(root, 'gold', t, 40, { cx: lx, cy: 941, w: 420 });
+      const tr = mk('div', 'sl', root); put(tr, { cx: (x0 + x1) / 2, cy: 1005, w: x1 - x0, h: 26 });
+      const kn = mk('div', 'kn', root); const v = vol[key];
+      kn.style.left = `calc(50% + ${x0 + (x1 - x0) * v - DW / 2} * var(--k))`; kn.style.top = `calc(50% + ${1005 - DH / 2} * var(--k))`;
+      const setv = e => { const r = tr.getBoundingClientRect(); const nv = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)); vol[key] = nv; kn.style.left = (r.left - root.getBoundingClientRect().left + nv * r.width) + 'px'; if (key === 'music') setMusicVol(nv); };
+      let drag = false; tr.style.cursor = kn.style.cursor = 'pointer'; tr.style.pointerEvents = kn.style.pointerEvents = 'auto';
+      tr.onpointerdown = e => { drag = true; setv(e); tr.setPointerCapture(e.pointerId); }; tr.onpointermove = e => { if (drag) setv(e); }; tr.onpointerup = () => { drag = false; };
+      kn.onpointerdown = e => { drag = true; tr.setPointerCapture(e.pointerId); tr.dispatchEvent(new PointerEvent('pointerdown', e)); };
+    }
+  }
+  const vol = { music: 0.9, sfx: 0.9, esfx: 0.9 };
+  function setMusicVol(v) { const a = document.querySelector('audio'); if (a) a.volume = v; if (window.songAudio) window.songAudio.volume = v; }
+  function saveThenExit() { if (typeof saveLevel === 'function') saveLevel(); setTimeout(exitToStart, 300); }
+  function exitToStart() {
+    close();
+    if (window.stopPlay && window.play && window.play.active) stopPlay();
+    if ($('empty')) $('empty').style.display = ''; else if (window.showPresetLevels) showPresetLevels();
+  }
+
+  // ---------- level settings ----------
+  const SPEED_VALUES = [1, 0, 2, 3, 4];
+  const SPEED_FRAMES = ['boost_01_001.png', 'boost_02_001.png', 'boost_03_001.png', 'boost_04_001.png', 'boost_05_001.png'];
+  const MODE_NAMES = ['icon', 'ship', 'ball', 'bird', 'dart', 'robot', 'spider', 'swing'];
+  const ox = (DW - 1515) / 2, oy = (DH - 1013) / 2 + 4;
+  const P = (x, y, w, h) => ({ cx: ox + x, cy: oy + y, w, h });
+  function channelHexOf(id) { const c = level.channels.get(id); if (!c) return '2a7dff'; const h = v => Math.round(v).toString(16).padStart(2, '0'); return h(c.r) + h(c.g) + h(c.b); }
+  function songBox() {
+    const k = hdrGet('kA16');
+    const sid = Number(meta && meta.k45 || 0), track = Number(meta && meta.k8 || 0);
+    const custom = sid > 0;
+    const norm = nbtn(root, custom ? 'GJ_button_04' : 'GJ_button_01', null, P(892, 537, 190, 62), () => { }, 'Normal', 'gold', 36);
+    const cust = nbtn(root, custom ? 'GJ_button_01' : 'GJ_button_04', null, P(1100, 537, 190, 62), () => { }, 'Custom', 'gold', 36);
+    const box = nine(root, 'GJ_square01', '6e3d26', P(759, 730, 1008, 300), 28, 40);
+    if (!custom) {
+      const name = LEVEL_NAMES[track] || 'Unknown';
+      txt(root, 'big', String(track + 1).padStart(2, '0') + ': ' + name, 58, P(759, 735, 700, 80));
+      frame(root, 'GJ_arrow_01_001.png', P(365, 745, 64, 78));
+      frame(root, 'GJ_arrow_01_001.png', P(1175, 745, 64, 78), 'transform:scaleX(-1)');
+    } else {
+      const sb = (typeof songInfoText === 'function') ? songInfoText() : '';
+      txt(root, 'big', 'Song ' + sid, 54, P(759, 690, 700, 70));
+      nbtn(root, 'GJ_button_04', null, P(758, 790, 520, 95), () => { close(); $('menu').classList.add('on'); }, 'Select Custom Song', 'big', 44);
+    }
+  }
+  function settingsDialog() {
+    const panel = nine(root, 'GJ_square01', null, P(757, 506, 1515, 1013), 28, 46);
+    txt(root, 'gold', 'Speed:', 50, P(130, 60, 240, 70));
+    txt(root, 'gold', 'Select Color:', 62, P(755, 60, 560, 80));
+    txt(root, 'gold', 'BG:', 46, P(1380, 60, 160, 66));
+    txt(root, 'gold', 'Mode:', 50, P(133, 330, 220, 70));
+    txt(root, 'gold', 'Game Type:', 54, P(755, 317, 520, 70));
+    txt(root, 'gold', 'Select Song:', 58, P(535, 540, 560, 76));
+    txt(root, 'gold', 'Options:', 50, P(133, 598, 260, 70));
+    txt(root, 'gold', 'G:', 46, P(1380, 278, 160, 66));
+    txt(root, 'gold', 'MG:', 46, P(1380, 498, 160, 66));
+    // speed and mode buttons
+    const sp = Number(hdrGet('kA4') || 0), md = Number(hdrGet('kA2') || 0);
+    const spb = mk('button', 'a press', root); put(spb, P(133, 165, 130, 130)); frame(spb, SPEED_FRAMES[Math.max(0, SPEED_VALUES.indexOf(sp))], { cx: 0, cy: 0, w: 130, h: 130 }, 'left:0;top:0;width:100%;height:100%'); spb.onclick = () => openOver(speedDialog);
+    const mdb = mk('button', 'a press', root); put(mdb, P(133, 433, 110, 110)); frame(mdb, `gj_${MODE_NAMES[md] || 'icon'}Btn_on_001.png`, { cx: 0, cy: 0, w: 110, h: 110 }, 'left:0;top:0;width:100%;height:100%'); mdb.onclick = () => openOver(modeDialog);
+    const opt = mk('button', 'a press', root); put(opt, P(133, 705, 100, 100)); frame(opt, 'GJ_optionsBtn_001.png', { cx: 0, cy: 0, w: 100, h: 100 }, 'left:0;top:0;width:100%;height:100%');
+    // colour squares
+    const COLS = [['BG', 1000, 292, 353], ['G', 1001, 447, 498], ['G2', 1009, 602, 662], ['Line', 1002, 757, 827], ['MG', 1013, 912, 975], ['MG2', 1014, 1067, 1137]];
+    for (const [t, ch, x, px] of COLS) {
+      txt(root, 'big', t + ':', 38, P(x - 12, 125, 150, 50), 'center');
+      const plus = mk('div', 'a', root); put(plus, P(px, 123, 38, 38)); plus.style.cssText += 'background:#00000055;border-radius:7px'; const pi = mk('img', 'a', plus); pi.style.cssText = 'left:12%;top:12%;width:76%;height:76%;object-fit:contain;opacity:.8'; live(pi, () => frameURL('GJ_plus2Btn_001.png'));
+      const sq = mk('div', 'a', root); put(sq, P(x, 197, 90, 90));
+      const hexc = channelHexOf(ch), im = mk('img', 'a', sq); im.style.cssText = 'left:-6%;top:-6%;width:112%;height:112%;object-fit:contain'; live(im, () => frameURL('GJ_colorBtn_001.png', hexc));
+    }
+    txt(root, 'big', 'More:', 38, P(1224, 125, 180, 50));
+    nbtn(root, 'GJ_button_04', null, P(1224, 197, 90, 90), null, '+', 'big', 60);
+    // game type
+    nbtn(root, 'GJ_button_01', null, P(538, 405, 385, 78), null, 'Classic', 'gold', 54);
+    nbtn(root, 'GJ_button_04', null, P(977, 405, 385, 78), null, 'Platformer', 'gold', 54);
+    songBox();
+    // previews of the background, ground and middleground
+    const pv = (name, y, fn) => { const b = mk('button', 'a press', root); put(b, P(1382, y, 142, 142)); b.style.border = `calc(4 * var(--k)) solid #000`; b.style.background = '#000'; frame(b, name, { cx: 0, cy: 0, w: 142, h: 142 }, 'left:0;top:0;width:100%;height:100%'); b.onclick = fn; };
+    const bgId = Math.max(1, Number(hdrGet('kA6') || 1)), gId = Math.max(1, Number(hdrGet('kA7') || 1));
+    pv(`bgIcon_${String(Math.min(59, bgId)).padStart(2, '0')}_001.png`, 162, () => openOver(bgDialog));
+    pv(`gIcon_${String(Math.min(22, gId)).padStart(2, '0')}_001.png`, 382, () => openOver(groundDialog));
+    pv('mgIcon_00_001.png', 602, null);
+    nbtn(root, 'GJ_button_04', null, P(1382, 745, 160, 92), () => openOver(fontDialog), 'Font', 'gold', 54);
+    nbtn(root, 'GJ_button_01', null, P(757, 950, 190, 100), back, 'OK', 'gold', 66);
+  }
+  function smallDialog(w, h, title, titleY) {
+    const cx = DW / 2, cy = DH / 2, o = (x, y, ww, hh) => ({ cx: cx - w / 2 + x, cy: cy - h / 2 + y, w: ww, h: hh });
+    nine(root, 'GJ_square01', null, { cx, cy, w, h }, 28, 46);
+    txt(root, 'big', title, 76, o(w / 2, titleY, 700, 100));
+    return o;
+  }
+  function speedDialog() {
+    const o = smallDialog(1200, 526, 'Select Speed', 80);
+    const cur = Number(hdrGet('kA4') || 0);
+    SPEED_FRAMES.forEach((f, i) => {
+      const b = mk('button', 'a press', root); put(b, o(195 + i * 202, 250, 190, 160));
+      const im = frame(b, f, { cx: 0, cy: 0, w: 190, h: 160 }, 'left:0;top:0;width:100%;height:100%' + (SPEED_VALUES[i] === cur ? '' : ';filter:brightness(.55) saturate(.8)'));
+      b.onclick = () => { hdrSet('kA4', SPEED_VALUES[i]); back(); };
+    });
+    nbtn(root, 'GJ_button_01', null, o(600, 458, 190, 100), back, 'OK', 'gold', 66);
+  }
+  function modeDialog() {
+    const o = smallDialog(1215, 531, 'Select Mode', 80);
+    const cur = Number(hdrGet('kA2') || 0);
+    MODE_NAMES.forEach((m, i) => {
+      const b = mk('button', 'a press', root); put(b, o(117 + i * 140, 262, 100, 100));
+      frame(b, `gj_${m}Btn_${i === cur ? 'on' : 'off'}_001.png`, { cx: 0, cy: 0, w: 100, h: 100 }, 'left:0;top:0;width:100%;height:100%');
+      b.onclick = () => { hdrSet('kA2', i); back(); };
+    });
+    nbtn(root, 'GJ_button_01', null, o(622, 468, 190, 100), back, 'OK', 'gold', 66);
+  }
+  function gridDialog(w, h, title, names, cols, x0, y0, dx, dy, size, cur, set, okY) {
+    const o = smallDialog(w, h, title, 80);
+    names.forEach((n, i) => {
+      const b = mk('button', 'a press', root); put(b, o(x0 + (i % cols) * dx, y0 + Math.floor(i / cols) * dy, size, size));
+      b.style.background = '#000'; b.style.border = `calc(4 * var(--k)) solid ${i + 1 === cur ? '#7dffff' : '#000'}`;
+      frame(b, n, { cx: 0, cy: 0, w: size, h: size }, 'left:0;top:0;width:100%;height:100%');
+      b.onclick = () => { set(i + 1); back(); };
+    });
+    return o;
+  }
+  function bgDialog() {
+    const o = gridDialog(1192, 991, 'Select Background', BGI, 10, 71, 188, 118.5, 118, 90, Math.max(1, Number(hdrGet('kA6') || 1)), v => hdrSet('kA6', v));
+    nbtn(root, 'GJ_button_01', null, o(601, 925, 190, 100), back, 'OK', 'gold', 66);
+  }
+  function groundDialog() {
+    const o = gridDialog(1196, 858, 'Select Ground', GI, 8, 128, 230, 135, 135, 98, Math.max(1, Number(hdrGet('kA7') || 1)), v => hdrSet('kA7', v));
+    txt(root, 'gold', 'Line', 52, o(1037, 590, 200, 70));
+    const line = Number(hdrGet('kA17') || 1) || 1;
+    [[960, 668], [1117, 668], [960, 752]].forEach(([x, y], i) => nbtn(root, i + 1 === line ? 'GJ_button_02' : 'GJ_button_04', null, o(x, y, 110, 70), () => { hdrSet('kA17', i + 1); back(); }, String(i + 1), 'big', 46));
+    nbtn(root, 'GJ_button_01', null, o(600, 790, 190, 100), back, 'OK', 'gold', 66);
+  }
+  function fontDialog() {
+    const o = smallDialog(1200, 760, 'Select Font', 80);
+    const cur = Number(hdrGet('kA18') || 0);
+    for (let i = 0; i <= 59; i++) {
+      const b = nbtn(root, i === cur ? 'GJ_button_02' : 'GJ_button_04', null, o(100 + (i % 10) * 111, 200 + Math.floor(i / 10) * 92, 96, 76), () => { hdrSet('kA18', i); back(); }, String(i), 'big', 44);
+    }
+    nbtn(root, 'GJ_button_01', null, o(600, 700, 190, 90), back, 'OK', 'gold', 60);
+  }
+
+  // ---------- entry points ----------
+  function openPause() { if (!level) return; current = pauseMenu; stack.length = 0; open(pauseMenu); }
+  function openSettings() { if (!level) return; stack.length = 0; current = settingsDialog; open(settingsDialog); }
+  addEventListener('keydown', e => {
+    if (e.code !== 'Escape' || (window.play && window.play.active)) return;
+    e.stopImmediatePropagation(); e.preventDefault();
+    if (root.classList.contains('on')) { if (stack.length) back(); else close(); } else openPause();
+  }, true);
+  window.dialogsApi = { openPause, openSettings, close, hdrGet, hdrSet };
+})();
+</script>
 <script>
 "use strict";
 // ================= public build: empty start =================
