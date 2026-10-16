@@ -2054,7 +2054,7 @@ function triggerFlags(o) {
 }
 // Property keys used below come from the community object-property table (gd-info-explorer / GD Docs).
 const SHADER_IDS = new Set([2904, 2905, 2907, 2909, 2910, 2911, 2912, 2913, 2914, 2915, 2916, 2917, 2919, 2920, 2921, 2922, 2923]);
-const SIM_IDS = new Set([1347, 899, 29, 30, 104, 105, 221, 717, 718, 743, 900, 915, 901, 1006, 1007, 1049, 1268, 1346, 2067, 1913, 1916, 2015]);
+const SIM_IDS = new Set([1616, 1347, 899, 29, 30, 104, 105, 221, 717, 718, 743, 900, 915, 901, 1006, 1007, 1049, 1268, 1346, 2067, 1913, 1916, 2015]);
 const isSimulated = o => (SIM_IDS.has(o.id) || SHADER_IDS.has(o.id)) && o.raw['11'] !== '1';
 // every shader value the timeline can drive, with its "off" value; units are the editor's own (screen height = 320 units)
 const SH_DEF = { gray: 0, grayR: 1, grayG: 1, grayB: 1, grayLum: 0, sepia: 0, invR: 0, invG: 0, invB: 0, hue: 0,
@@ -2240,7 +2240,7 @@ function buildTimeline() {
   const speedAt = X => segAt(X).v;
 
   const ev = { chan: new Map(), pulseC: new Map(), pulseG: new Map(), move: new Map(), follow: new Map(), alpha: new Map(), toggle: new Map(), rot: new Map(),
-               scale: new Map(), zoom: [], coff: [], crot: [], sh: new Map(), shock: [] };
+               scale: new Map(), stops: [], zoom: [], coff: [], crot: [], sh: new Map(), shock: [] };
   const push = (map, key, e) => { if (!map.has(key)) map.set(key, []); map.get(key).push(e); };
   const members = new Map(), first = new Map();
   for (const o of level.objs) {
@@ -2264,7 +2264,9 @@ function buildTimeline() {
         return;
       case 901:
         if (o.raw['100'] === '1' || o.raw['394'] === '1') return;
-        push(ev.move, g, { t, dur, e, rate, dx: rawNum(o, '28', 0), dy: rawNum(o, '29', 0) }); return;
+        push(ev.move, g, { t, src: groupsOf(o), dur, e, rate, dx: rawNum(o, '28', 0), dy: rawNum(o, '29', 0) }); return;
+      case 1616:                                                 // Stop: acts on the triggers whose own group is the target; option 580 = 0 stop, 1 pause, 2 resume (from the exe)
+        if (g) ev.stops.push({ t, tgt: g, mode: rawNum(o, '580', 0) }); return;
       case 1347:                                                 // Follow: group g copies the movement of group 71, scaled by the x/y mods, for the duration
         if (o.raw['71'] && g) push(ev.follow, g, { t, dur, tgt: rawNum(o, '71', 0), xm: rawNum(o, '72', 1), ym: rawNum(o, '73', 1) }); return;
       case 1007: push(ev.alpha, g, { t, dur, e, rate, to: [rawNum(o, '35', 1)] }); return;
@@ -2279,12 +2281,12 @@ function buildTimeline() {
       }
       case 1346:
         if (o.raw['100'] === '1' || o.raw['394'] === '1') return;
-        push(ev.rot, g, { t, dur, e, rate, deg: rawNum(o, '68', 0) + 360 * rawNum(o, '69', 0), center: rawNum(o, '71', 0), lock: o.raw['70'] === '1' }); return;
+        push(ev.rot, g, { t, src: groupsOf(o), dur, e, rate, deg: rawNum(o, '68', 0) + 360 * rawNum(o, '69', 0), center: rawNum(o, '71', 0), lock: o.raw['70'] === '1' }); return;
       case 2067: {
         let sx = rawNum(o, '150', 1), sy = rawNum(o, '151', 1);
         if (o.raw['153'] === '1' && sx) sx = 1 / sx;
         if (o.raw['154'] === '1' && sy) sy = 1 / sy;
-        push(ev.scale, g, { t, dur, e, rate, sx, sy, center: rawNum(o, '71', 0) }); return;
+        push(ev.scale, g, { t, src: groupsOf(o), dur, e, rate, sx, sy, center: rawNum(o, '71', 0) }); return;
       }
       case 1913: ev.zoom.push({ t, dur, e, rate, to: [rawNum(o, '371', 1)] }); return;
       case 1916: ev.coff.push({ t, dur, e, rate, to: [rawNum(o, '28', 0), rawNum(o, '29', 0)] }); return;
@@ -2301,7 +2303,7 @@ function buildTimeline() {
   }
   const byT = (a, b) => a.t - b.t;
   for (const m of [ev.chan, ev.pulseC, ev.pulseG, ev.move, ev.follow, ev.alpha, ev.toggle, ev.rot, ev.scale, ev.sh]) for (const arr of m.values()) arr.sort(byT);
-  for (const arr of [ev.zoom, ev.coff, ev.crot, ev.shock]) arr.sort(byT);
+  for (const arr of [ev.zoom, ev.coff, ev.crot, ev.shock, ev.stops]) arr.sort(byT);
   let ang = 0;
   for (const e of ev.crot) { ang = e.add ? ang + e.deg : e.deg; e.to = [ang]; }          // "Add" stacks on the previous rotation
   const maxX = Math.max(600, ...level.objs.map(o => o.x)) + 300;
@@ -2334,12 +2336,26 @@ const envelope = (e, T) => {
   const y = x - e.fin - e.hold;
   return e.fout > 0 && y < e.fout ? 1 - y / e.fout : 0;
 };
+// seconds a trigger's action has really run by time T, after Stop triggers aimed at its own group (stop ends it, pause freezes, resume continues)
+function runTime(ev, e, T) {
+  let acc = 0, last = e.t, running = true;
+  for (const s of ev.stops) {
+    if (s.t <= e.t) continue;
+    if (s.t > T) break;
+    if (!e.src || !e.src.includes(s.tgt)) continue;
+    if (running) { acc += s.t - last; last = s.t; }
+    if (s.mode === 0) return acc;
+    if (s.mode === 1) running = false;
+    else if (!running) { running = true; last = s.t; }
+  }
+  return running ? acc + (T - last) : acc;
+}
 // how far a group has moved by time T: its own move triggers plus whatever it has followed (depth-limited so loops end)
 function moveDisp(ev, g, T, depth) {
   let dx = 0, dy = 0;
   for (const e of (ev.move.get(g) || [])) {
     if (e.t > T) break;
-    const k = ease(e.e, e.rate, e.dur > 0 ? clampN((T - e.t) / e.dur, 0, 1) : 1);
+    const k = ease(e.e, e.rate, e.dur > 0 ? clampN(runTime(ev, e, T) / e.dur, 0, 1) : 1);
     dx += e.dx * k; dy += e.dy * k;
   }
   if (depth < 6) for (const f of (ev.follow.get(g) || [])) {
@@ -2378,13 +2394,13 @@ function stateAt(X) {
     for (const e of (ev.toggle.get(g) || [])) { if (e.t > T) break; st.hidden = !e.on; }
     for (const e of (ev.rot.get(g) || [])) {
       if (e.t > T) break;
-      st.rot += e.deg * ease(e.e, e.rate, e.dur > 0 ? clampN((T - e.t) / e.dur, 0, 1) : 1);
+      st.rot += e.deg * ease(e.e, e.rate, e.dur > 0 ? clampN(runTime(ev, e, T) / e.dur, 0, 1) : 1);
       if (e.center) st.center = e.center;
       if (e.lock) st.lock = true;
     }
     for (const e of (ev.scale.get(g) || [])) {
       if (e.t > T) break;
-      const k = ease(e.e, e.rate, e.dur > 0 ? clampN((T - e.t) / e.dur, 0, 1) : 1);
+      const k = ease(e.e, e.rate, e.dur > 0 ? clampN(runTime(ev, e, T) / e.dur, 0, 1) : 1);
       st.sx *= lerpN(1, e.sx, k); st.sy *= lerpN(1, e.sy, k);
       if (e.center) st.center = e.center;
     }
