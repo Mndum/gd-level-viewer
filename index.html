@@ -1223,7 +1223,9 @@ const DEFAULT_SONG_SERVICE = 'https://gd-song-service.monochromdum.workers.dev';
 const SERVICE_KEY = 'gd-level-viewer.songService';
 const song = { id: 0, audio: null, fileUrl: null, info: null, token: 0, label: '' };
 let songFolder = null;                       // handle to the game's save folder
-function songService() { try { return (localStorage.getItem(SERVICE_KEY) || DEFAULT_SONG_SERVICE).replace(/\/+$/, ''); } catch (e) { return DEFAULT_SONG_SERVICE; } }
+// strips trailing slashes and an accidental /audio, /info or /level, so a pasted endpoint still works
+function cleanServiceUrl(u) { return String(u || '').trim().replace(/\/+$/, '').replace(/\/(audio|info|level)(\/\d*)?$/i, '').replace(/\/+$/, ''); }
+function songService() { try { return cleanServiceUrl(localStorage.getItem(SERVICE_KEY) || DEFAULT_SONG_SERVICE) || DEFAULT_SONG_SERVICE; } catch (e) { return DEFAULT_SONG_SERVICE; } }
 function setSongStatus(t) { $('songStatus').textContent = t; }
 function setSongLink(id) {
   let a = $('songLink');
