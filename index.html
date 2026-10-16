@@ -3511,9 +3511,9 @@ function playCollide(speed) {
     } else if (e.kind === w.hazards) {
       if (e.box.circle) {                                          // a saw: the nearest point of the player's box to the circle's centre
         const c = e.box.circle, cy = g > 0 ? c.y : -c.y;
-        const nx = Math.min(Math.max(c.x, small2.l), small2.r), ny = Math.min(Math.max(cy, small2.b), small2.t);
+        const nx = Math.min(Math.max(c.x, rect2.l), rect2.r), ny = Math.min(Math.max(cy, rect2.b), rect2.t);
         if ((nx - c.x) * (nx - c.x) + (ny - cy) * (ny - cy) < c.r * c.r) { playDie(); return; }
-      } else if (overlaps(small2, b)) { playDie(); return; }
+      } else if (overlaps(rect2, b)) { playDie(); return; }          // the player's whole (yellow) hitbox touching a hazard's (red) hitbox kills
     } else if (e.kind === w.pads) {
       if (overlaps(rect2, b)) {
         if (!p.touched.has(e.box)) {
