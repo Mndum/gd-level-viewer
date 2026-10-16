@@ -781,8 +781,14 @@ function draw() {
   // draw deco first, then blocks/spikes/triggers on top
   if (atlas.ready) {
     // with real sprites, follow the level's own z layer / z order
+    // objects far outside the view are skipped before anything else is worked out for them (moved/rotated/scaled groups can leave
+    // the view or enter it, so the shortcut is off while such triggers are being previewed)
+    let cull = true;
+    try { if (typeof previewOn === 'function' && previewOn()) { const ev = timelineModel().ev; cull = !(ev.move.size || ev.follow.size || ev.rot.size || ev.scale.size); } } catch (e) { cull = true; }
+    const [cx0, cy1] = toWorld(0, 0), [cx1, cy0] = toWorld(W, H);
     for (const o of level.zSorted) {
       if (!visible(o)) continue;
+      if (cull) { const r = 30 * Math.max(o.sx, o.sy) + 60; if (o.x < cx0 - r || o.x > cx1 + r || o.y < cy0 - r || o.y > cy1 + r) continue; }
       drawObject(o, highlight !== null && o.id !== highlight);
     }
   } else {
