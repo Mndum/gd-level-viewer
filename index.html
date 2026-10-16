@@ -2642,7 +2642,59 @@ function drawGroundPicture(W, H, gy) {
   const top = Math.max(gy, 0);
   for (let xx = x; xx < W; xx += size) ctx.drawImage(grPic.tint, Math.round(xx), Math.round(gy), Math.ceil(size) + 1, Math.ceil(size));
 }
-// ---- Text objects (id 914): the level stores the words (key 31, base64) and they are drawn in the game's big font ----
+// ---- Text objects (id 914): the level stores the words (key 31, base64); the font is the level's own setting (kA18) ----
+// 0 = the big font, 1-59 = gjFont01-gjFont59. Fonts are read from the game folder (or loaded files), else from the hosted copies.
+const fontCache = new Map();
+function levelFontId() {
+  const m = level && /(?:^|,)kA18,(\d+)/.exec(level.header || '');
+  const n = m ? Number(m[1]) : 0;
+  return n >= 0 && n <= 59 ? n : 0;
+}
+async function fetchAnyFile(names) {
+  if (typeof folderHandle !== 'undefined' && folderHandle) {
+    try {
+      if ((await folderHandle.queryPermission({ mode: 'read' })) === 'granted') {
+        for (const n of names) { try { return await (await folderHandle.getFileHandle(n)).getFile(); } catch (e) { /* next */ } }
+      }
+    } catch (e) { /* fall through */ }
+  }
+  if (typeof lastAssetFiles !== 'undefined' && lastAssetFiles) {
+    for (const n of names) { const f = lastAssetFiles.find(x => x.name === n); if (f) return f; }
+  }
+  for (const n of names) {
+    try { const r = await fetch('assets/' + n); if (r.ok) return await r.blob(); } catch (e) { /* not hosted */ }
+  }
+  return null;
+}
+async function loadGjFont(id, key, f) {
+  const stem = 'gjFont' + String(id).padStart(2, '0');
+  try {
+    for (const q of (assetQuality === 'uhd' ? ['uhd', 'hd'] : ['hd', 'uhd'])) {
+      const fnt = await fetchAnyFile([`${stem}-${q}.fnt`]), png = fnt && await fetchAnyFile([`${stem}-${q}.png`]);
+      if (!fnt || !png) continue;
+      const txt = await fnt.text();
+      const common = /common\s+lineHeight=(\d+)/.exec(txt);
+      const chars = {};
+      const re = /char id=(\d+)\s+x=(\d+)\s+y=(\d+)\s+width=(\d+)\s+height=(\d+)\s+xoffset=(-?\d+)\s+yoffset=(-?\d+)\s+xadvance=(-?\d+)/g;
+      let m;
+      while ((m = re.exec(txt))) chars[+m[1]] = { x: +m[2], y: +m[3], w: +m[4], h: +m[5], xo: +m[6], yo: +m[7], xa: +m[8] };
+      f.chars = chars; f.lineH = common ? +common[1] : 60; f.Q = q === 'uhd' ? 4 : 2; f.img = await createImageBitmap(png);
+      f.ready = Object.keys(chars).length > 0;
+      break;
+    }
+  } catch (e) { /* fall back to the big font */ }
+  f.loading = false;
+  if (f.ready) draw();
+}
+function fontFor(id) {
+  if (id > 0) {
+    const key = id + '|' + assetQuality;
+    let f = fontCache.get(key);
+    if (!f) { f = { ready: false, loading: true, id }; fontCache.set(key, f); loadGjFont(id, key, f); }
+    if (f.ready) return f;
+  }
+  return bmfont.ready ? { chars: bmfont.chars, img: bmfont.img, lineH: bmfont.lineH, Q: assetQuality === 'uhd' ? 4 : 2, id: 0, ready: true } : null;
+}
 const textCache = new Map();
 function textOf(o) {
   const v = o.raw && o.raw['31'];
@@ -2652,21 +2704,21 @@ function textOf(o) {
     return decodeURIComponent(escape(bin));
   } catch (e) { return null; }
 }
-function textBitmap(text, hex) {
-  const key = text + '|' + hex + '|' + assetQuality;
+function textBitmap(text, hex, font) {
+  const key = font.id + '|' + assetQuality + '|' + text + '|' + hex;
   const hit = textCache.get(key);
   if (hit) return hit;
   const lines = text.split(/\r?\n/);
-  const lh = bmfont.lineH, widths = lines.map(l => { let w = 0; for (const ch of l) { const c = bmfont.chars[ch.charCodeAt(0)]; if (c) w += c.xa; } return w; });
+  const lh = font.lineH, widths = lines.map(l => { let w = 0; for (const ch of l) { const c = font.chars[ch.charCodeAt(0)]; if (c) w += c.xa; } return w; });
   const W = Math.max(1, Math.ceil(Math.max(...widths))), H = Math.ceil(lh * lines.length);
   const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
   const g = cv.getContext('2d');
   lines.forEach((l, li) => {
     let x = (W - widths[li]) / 2;                                // centred lines
     for (const ch of l) {
-      const c = bmfont.chars[ch.charCodeAt(0)];
+      const c = font.chars[ch.charCodeAt(0)];
       if (!c) continue;
-      g.drawImage(bmfont.img, c.x, c.y, c.w, c.h, x + c.xo, li * lh + c.yo, c.w, c.h);
+      g.drawImage(font.img, c.x, c.y, c.w, c.h, x + c.xo, li * lh + c.yo, c.w, c.h);
       x += c.xa;
     }
   });
@@ -2677,12 +2729,13 @@ function textBitmap(text, hex) {
   return cv;
 }
 function drawTextObject(o, sx, sy, dim) {
-  if (!bmfont.ready) return false;
+  const font = fontFor(levelFontId());
+  if (!font) return false;
   const text = textOf(o);
   if (text === null) return false;
   if (!text.trim()) return true;
-  const cv = textBitmap(text, typeof channelHexP === 'function' ? channelHexP(o.col, 'main') : channelHex(o.col));
-  const Q = assetQuality === 'uhd' ? 4 : 2, k = view.zoom * 0.5 / Q;      // one text line is about a block tall at scale 1
+  const cv = textBitmap(text, typeof channelHexP === 'function' ? channelHexP(o.col, 'main') : channelHex(o.col), font);
+  const k = view.zoom / font.Q;                                      // font pixels / Q = level units (checked against the game: 'practice mode' is ~84 units wide at scale 0.75)
   ctx.save();
   ctx.translate(sx, sy);
   ctx.rotate((o.rot * Math.PI) / 180);
@@ -2692,8 +2745,7 @@ function drawTextObject(o, sx, sy, dim) {
   ctx.restore();
   return true;
 }
-</script>
-<script>
+</script><script>
 "use strict";
 // ================= public build: empty start =================
 (function () {
