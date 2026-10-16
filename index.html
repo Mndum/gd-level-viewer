@@ -1617,7 +1617,7 @@ function opAdd(objs) {
 function pushOp(op, selectAfter) {
   op.do();
   hist.undo.push(op);
-  if (hist.undo.length > (typeof GOPT !== 'undefined' && GOPT.bigUndo ? 1000 : 200)) hist.undo.shift();
+  if (hist.undo.length > 100000) hist.undo.shift();               // no practical limit on undo history
   hist.redo.length = 0;
   level.edited = true;
   if (selectAfter !== undefined) setSel(selectAfter);
@@ -3727,8 +3727,7 @@ const GOPT_LIST = [
   ['effectLines', 'Effect Lines', false, 'Vertical line for triggers where they are activated'],
   ['durationLines', 'Duration Lines', false, 'Horizontal line for triggers showing how long they are active'],
   ['gridOnTop', 'Grid On Top', false, 'Shows the grid on top of objects in the editor'],
-  ['hideBg', 'Hide Background', false, 'Hides the background in the editor'],
-  ['bigUndo', 'Increase Undo/Redo', false, 'Raises the undo and redo limit from 200 to 1000']
+  ['hideBg', 'Hide Background', false, 'Hides the background in the editor']
 ];
 const GOPT = {};
 for (const [k, , d] of GOPT_LIST) GOPT[k] = d;
