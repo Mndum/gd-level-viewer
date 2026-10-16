@@ -3397,7 +3397,7 @@ function stopPlay() {
   bar.insertBefore(btn, bar.firstChild);
   const hud = document.createElement('div');
   hud.id = 'plHud'; hud.hidden = true;
-  hud.style.cssText = 'position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:4;padding:6px 14px;border:3px solid var(--edge);border-radius:12px;background:rgba(16,25,47,.88);font-size:16px';
+  hud.style.cssText = 'position:absolute;top:13%;left:50%;transform:translateX(-50%);z-index:4;padding:6px 14px;border:3px solid var(--edge);border-radius:12px;background:rgba(16,25,47,.88);font-size:16px';
   $('stage').appendChild(hud);
   const down = () => {
     if (!play.active) return;
@@ -4348,7 +4348,7 @@ function stopPlay() {
     const sp = Number(hdrGet('kA4') || 0), md = Number(hdrGet('kA2') || 0);
     const spb = mk('button', 'a press', root); put(spb, P(133, 165, 130, 130)); frame(spb, SPEED_FRAMES[Math.max(0, SPEED_VALUES.indexOf(sp))], { cx: 0, cy: 0, w: 130, h: 130 }, 'left:0;top:0;width:100%;height:100%'); spb.onclick = () => openOver(speedDialog);
     const mdb = mk('button', 'a press', root); put(mdb, P(133, 433, 110, 110)); frame(mdb, `gj_${MODE_NAMES[md] || 'icon'}Btn_on_001.png`, { cx: 0, cy: 0, w: 110, h: 110 }, 'left:0;top:0;width:100%;height:100%'); mdb.onclick = () => openOver(modeDialog);
-    const opt = mk('button', 'a press', root); put(opt, P(133, 705, 100, 100)); frame(opt, 'GJ_optionsBtn_001.png', { cx: 0, cy: 0, w: 100, h: 100 }, 'left:0;top:0;width:100%;height:100%');
+    const opt = mk('button', 'a press', root); put(opt, P(133, 705, 100, 100)); frame(opt, 'GJ_optionsBtn_001.png', { cx: 0, cy: 0, w: 100, h: 100 }, 'left:0;top:0;width:100%;height:100%'); opt.onclick = () => openOver(optionsDialog);
     // colour squares
     const COLS = [['BG', 1000, 292, 353], ['G', 1001, 447, 498], ['G2', 1009, 602, 662], ['Line', 1002, 757, 827], ['MG', 1013, 912, 975], ['MG2', 1014, 1067, 1137]];
     for (const [t, ch, x, px] of COLS) {
@@ -4418,6 +4418,19 @@ function stopPlay() {
     const line = Number(hdrGet('kA17') || 1) || 1;
     [[960, 668], [1117, 668], [960, 752]].forEach(([x, y], i) => nbtn(root, i + 1 === line ? 'GJ_button_02' : 'GJ_button_04', null, o(x, y, 110, 70), () => { hdrSet('kA17', i + 1); back(); }, String(i + 1), 'big', 46));
     nbtn(root, 'GJ_button_01', null, o(600, 790, 190, 100), back, 'OK', 'gold', 66);
+  }
+  // the level options: how the player starts (read by the Play button)
+  function optionsDialog() {
+    const o = smallDialog(1000, 640, 'Level Options', 80);
+    const row = (y, label, key) => {
+      const on = hdrGet(key) === '1';
+      txt(root, 'gold', label, 54, o(380, y, 640, 70), 'left');
+      nbtn(root, on ? 'GJ_button_02' : 'GJ_button_04', null, o(860, y, 150, 84), () => { hdrSet(key, on ? 0 : 1); open(optionsDialog); }, on ? 'ON' : 'OFF', 'big', 46);
+    };
+    row(230, 'Mini Mode', 'kA3');
+    row(350, 'Upside Down', 'kA11');
+    row(470, 'Dual Mode', 'kA8');
+    nbtn(root, 'GJ_button_01', null, o(500, 580, 190, 90), back, 'OK', 'gold', 60);
   }
   function fontDialog() {
     const o = smallDialog(1200, 760, 'Select Font', 80);
