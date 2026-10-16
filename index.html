@@ -3980,6 +3980,7 @@ const GOPT_LIST = [
   ['triggerBoxes', 'Draw Trigger Boxes', false, 'Draws the hitbox for touch triggered objects'],
   ['effectLines', 'Effect Lines', false, 'Vertical line for triggers where they are activated'],
   ['durationLines', 'Duration Lines', false, 'Horizontal line for triggers showing how long they are active'],
+  ['linkControls', 'Link Controls', false, 'Enables option to link objects together in the editor. Linked objects are always selected and deleted together'],
   ['gridOnTop', 'Grid On Top', false, 'Shows the grid on top of objects in the editor'],
   ['hideBg', 'Hide Background', false, 'Hides the background in the editor']
 ];
@@ -4039,6 +4040,23 @@ const goptPlay = { trail: [], clicks: [], t: 0, prevPress: false };
       if (GOPT.noclip) parts.push('cheats on');
       h.textContent = parts.join('  ·  ') + (play.done ? '  ·  level complete!' : '');
     }
+  };
+}
+
+// ---- Link Controls: objects that share a link id (key 108) are always selected together (so also moved, copied and deleted together) ----
+{
+  const _setSel = setSel;
+  setSel = function (list, primary) {
+    if (GOPT.linkControls && list && list.length && typeof level !== 'undefined' && level) {
+      const ids = new Set();
+      for (const o of list) { const k = o.raw && o.raw['108']; if (k) ids.add(k); }
+      if (ids.size) {
+        const have = new Set(list), more = [];
+        for (const o of level.objs) if (!have.has(o) && o.raw && ids.has(o.raw['108'])) more.push(o);
+        if (more.length) list = list.concat(more);
+      }
+    }
+    _setSel(list, primary);
   };
 }
 
@@ -4510,8 +4528,10 @@ function goptOverlay() {
   const XF = [
     ['edit_flipXBtn', () => act('flipX'), 'Flip horizontally'], ['edit_flipYBtn', () => act('flipY'), 'Flip vertically'], ['edit_cwBtn', rot(90), 'Rotate 90° clockwise'], ['edit_ccwBtn', rot(-90), 'Rotate 90° counter-clockwise'],
     ['edit_rotate45rBtn', rot(45), 'Rotate 45° clockwise'], ['edit_rotate45lBtn', rot(-45), 'Rotate 45° counter-clockwise'], ['edit_freeRotateBtn', rot(15), 'Rotate 15° clockwise'], ['edit_rotateSnapBtn', rot(-15), 'Rotate 15° counter-clockwise'],
-    ['edit_scaleBtn', scl(1.25), 'Bigger (x1.25)'], ['edit_scaleXYBtn', scl(0.8), 'Smaller (÷1.25)'], ['edit_warpBtn', null, 'Warp (not available)']
+    ['edit_scaleBtn', scl(1.25), 'Bigger (x1.25)'], ['edit_scaleXYBtn', scl(0.8), 'Smaller (÷1.25)'], ['edit_warpBtn', null, 'Warp (not available)'],
+    ['gj_linkBtn', () => { if (window.dialogsApi && level) dialogsApi.openEditTools(); }, 'Build Helper: align, distribute, new groups, select left / right, link']
   ];
+  UI_FRAMES.push('gj_linkBtn_001.png');
   XF.forEach(([ic, fn, title], i) => {
     const cx = 1174 + (i % 4) * 114.5, cy = [828, 922, 1016][Math.floor(i / 4)];
     paneSquare('edit', 'GJ_button_01', null, { cx, cy, w: 104, h: 90 }, frameIcon(ic + '_001.png'), fn, title);
@@ -5338,6 +5358,52 @@ function goptOverlay() {
     numRow(o, 470, 'Brightness:', () => hsv()[2] ?? 1, v => setHsv(2, Math.max(0, Math.min(2, v))), 0.1);
     nbtn(root, 'GJ_button_01', null, o(500, 570, 190, 90), back, 'OK', 'gold', 60);
   }
+  // ---------- Build Helper: the Edit tab's align / distribute / group / select tools, and Link Controls ----------
+  const sortedBy = (sel, k) => sel.slice().sort((a, b) => a[k] - b[k]);
+  const moveTo = (sel, fn, name) => { pushOp(opProps(sel, ob => fn(ob), name)); };
+  function usedGroups() { const s = new Set(); for (const o of level.objs) for (const g of groupList(o)) s.add(g); return s; }
+  function newGroupBy(axis) {                         // every column (X) or row (Y) of the selection gets a group id of its own
+    const sel = selObjs(); if (!sel.length) return;
+    const used = usedGroups(), ids = new Map(); let next = 1;
+    const take = () => { while (used.has(next)) next++; used.add(next); return next; };
+    for (const o of sel) { const key = Math.round(o[axis] * 100) / 100; if (!ids.has(key)) ids.set(key, take()); }
+    A.editRaw(sel, ob => { const g = ids.get(Math.round(ob[axis] * 100) / 100); A.setKey(ob, '57', groupList(ob).concat(g).join('.')); }, 'new group ' + axis.toUpperCase());
+  }
+  function linkSel(on) {
+    const sel = selObjs(); if (!sel.length) return;
+    let next = 1; for (const o of level.objs) next = Math.max(next, rawNumOf(o, '108', 0) + 1);
+    const id = next;
+    A.editRaw(sel, ob => A.setKey(ob, '108', on ? id : undefined), on ? 'link' : 'unlink');
+  }
+  function selectSide(dir) {
+    const sel = selObjs(); if (!sel.length) return;
+    const ref = dir > 0 ? Math.max(...sel.map(o => o.x)) : Math.min(...sel.map(o => o.x));
+    setSel(level.objs.filter(o => dir > 0 ? o.x >= ref : o.x <= ref), view.selected); renderEdit(); draw();
+  }
+  const TOOLS = [
+    ['Align X', () => { const s = selObjs(), r = view.selected || s[s.length - 1]; if (s.length > 1 && r) { const x = r.x; moveTo(s, ob => { ob.x = x; }, 'align X'); } }, 'Moves every selected object to the X of the last selected one'],
+    ['Align Y', () => { const s = selObjs(), r = view.selected || s[s.length - 1]; if (s.length > 1 && r) { const y = r.y; moveTo(s, ob => { ob.y = y; }, 'align Y'); } }, 'Moves every selected object to the Y of the last selected one'],
+    ['Distribute X', () => { const s = sortedBy(selObjs(), 'x'); if (s.length > 2) { const a = s[0].x, b = s[s.length - 1].x, idx = new Map(s.map((o, i) => [o, i])); moveTo(s, ob => { ob.x = a + (b - a) * idx.get(ob) / (s.length - 1); }, 'distribute X'); } }, 'Spaces the selection evenly between its leftmost and rightmost object'],
+    ['Distribute Y', () => { const s = sortedBy(selObjs(), 'y'); if (s.length > 2) { const a = s[0].y, b = s[s.length - 1].y, idx = new Map(s.map((o, i) => [o, i])); moveTo(s, ob => { ob.y = a + (b - a) * idx.get(ob) / (s.length - 1); }, 'distribute Y'); } }, 'Spaces the selection evenly between its lowest and highest object'],
+    ['New Group X', () => newGroupBy('x'), 'Gives every column of the selection a new group'],
+    ['New Group Y', () => newGroupBy('y'), 'Gives every row of the selection a new group'],
+    ['Select All', () => { setSel(level.objs.slice()); renderEdit(); draw(); }, 'Selects every object'],
+    ['Select All Left', () => selectSide(-1), 'Selects everything at or to the left of the selection'],
+    ['Select All Right', () => selectSide(1), 'Selects everything at or to the right of the selection'],
+    ['Link', () => linkSel(true), 'Links the selected objects (needs Link Controls in the Options)'],
+    ['Unlink', () => linkSel(false), 'Removes the selected objects from their link']
+  ];
+  function editToolsDialog() {
+    const o = smallDialog(1200, 800, 'Build Helper', 80);
+    TOOLS.forEach(([name, fn], i) => {
+      const link = name === 'Link' || name === 'Unlink', off = link && !GOPT.linkControls;
+      nbtn(root, off ? 'GJ_button_04' : 'GJ_button_01', null, o(210 + (i % 3) * 390, 220 + Math.floor(i / 3) * 110, 370, 90), () => { if (off) return; fn(); open(current); }, name, 'gold', 46);
+    });
+    const n = selObjs().length;
+    txt(root, 'big', n + (n === 1 ? ' object selected' : ' objects selected') + (GOPT.linkControls ? '' : ' · turn on Link Controls in Options to link'), 34, o(600, 600, 1100, 50));
+    nbtn(root, 'GJ_button_01', null, o(600, 710, 190, 90), close, 'OK', 'gold', 60);
+  }
+  function openEditTools() { if (!level) return; stack.length = 0; current = editToolsDialog; open(editToolsDialog); }
   function openColors() { if (!level) return; stack.length = 0; current = colorsDialog; chPage = 0; open(colorsDialog); }
   // ---------- entry points ----------
   function openPause() { if (!level) return; current = pauseMenu; stack.length = 0; open(pauseMenu); }
@@ -5350,7 +5416,7 @@ function goptOverlay() {
   function openEditGroup() { if (!level || !selObjs().length) return; stack.length = 0; current = editGroupDialog; open(editGroupDialog); }
   function openEditObject() { if (!level || !selObjs().length) return; stack.length = 0; current = editObjectDialog; open(editObjectDialog); }
   function openAdvanced() { if (!level) return; stack.length = 0; current = advancedDialog; open(advancedDialog); }
-  window.dialogsApi = { openColors, openAdvanced, openEditSpecial, hasSpecial: () => !!specialOf(), openEditGroup, openEditObject, openPause, openSettings, close, hdrGet, hdrSet };
+  window.dialogsApi = { openEditTools, openColors, openAdvanced, openEditSpecial, hasSpecial: () => !!specialOf(), openEditGroup, openEditObject, openPause, openSettings, close, hdrGet, hdrSet };
 })();
 </script>
 <script>
