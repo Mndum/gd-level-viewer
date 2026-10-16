@@ -327,10 +327,23 @@ function parseChannels(headerStr) {
 
 // Z layers in level files: -5 (B5) … -1 (B3), 1 (B2), 3 (B1), 5 (T1), 7 (T2) … 11 (T4).
 // The game's own defaults are 3 for most objects and 5 for portals, pads and orbs.
+// default draw layer / order per object: decoded from the game's own setup tables (assets/zdefaults.json: id -> [z-order, z-layer])
+let ZDEF = {};
 function defaultZLayer(id) {
+  const z = ZDEF[id];
+  if (z && z[1] !== null && z[1] !== undefined) return z[1];
   const c = classify(id);
   return (c === 'portal' || c === 'padorb') ? 5 : 3;
 }
+function defaultZOrder(id) { const z = ZDEF[id]; return z && z[0] ? z[0] : 0; }
+fetch('assets/zdefaults.json').then(r => r.json()).then(j => {
+  ZDEF = j;
+  if (typeof level !== 'undefined' && level) {
+    for (const o of level.objs) { if (o.raw['24'] === undefined) o.zl = defaultZLayer(o.id); if (o.raw['25'] === undefined) o.zo = defaultZOrder(o.id); }
+    level.zSorted = level.objs.slice().sort((a, b) => (a.zl - b.zl) || (a.zo - b.zo) || (a.idx - b.idx));
+    if (typeof draw === 'function') draw();
+  }
+}).catch(() => { });
 
 function parseLevel(levelStr) {
   const parts = levelStr.split(';');
@@ -356,7 +369,7 @@ function parseLevel(levelStr) {
       col: p['21'] !== undefined ? Number(p['21']) : 0,
       col2: p['22'] !== undefined ? Number(p['22']) : 0,
       zl: p['24'] !== undefined ? Number(p['24']) : defaultZLayer(id),
-      zo: p['25'] !== undefined ? Number(p['25']) : 0,
+      zo: p['25'] !== undefined ? Number(p['25']) : defaultZOrder(id),
       idx: objs.length,
       groups: p['57'] || '',
       raw: p, fields: f, src: parts[i], dirty: false, scaleDirty: false, uni
@@ -3830,7 +3843,33 @@ function stopPlay() {
   // ----- view tab: the editor's view toggles (pink = on, grey = off) -----
   const viewState = { preview: false, hitbox: false, invis: false, ldm: false, anims: true, particle: true, shader: false, ground: true, oinfo: false, grid: true, filter: false,
     ignore: false, effect: true, dur: true, song: false, bpm: false, kframe: true, m1: false, m2: false, m3: false, tin: false, tout: false };
+  // Hitboxes: the sizes come from the game's own object setup (HIT_TABLE / hitSize in the play code). Blue = solid, red = hazard, green = pads, orbs and portals.
+  const SPECIAL_TYPES = new Set([3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 26, 27, 29, 32, 33, 34, 35, 41, 43, 46]);
+  function drawHitboxes() {
+    if (!level || !viewState.hitbox || typeof hitSize !== 'function') return;
+    const W = canvas._w, H = canvas._h, [x0, y1] = toWorld(0, 0), [x1, y0] = toWorld(W, H);
+    ctx.save(); ctx.lineWidth = 1.5;
+    for (const o of level.objs) {
+      if (o.x < x0 - 120 || o.x > x1 + 120 || o.y < y0 - 120 || o.y > y1 + 120) continue;
+      if (o.cls === 'deco' || o.cls === 'trigger') continue;
+      const e = HIT_TABLE[o.id], ty = e ? e[0] : null;
+      if (ty === 7 || ty === -1 || ty === 20) continue;
+      let kind = ty === 2 || o.cls === 'spike' ? 'hazard' : (SPECIAL_TYPES.has(ty) || o.cls === 'portal' || o.cls === 'padorb') ? 'special' : 'solid';
+      const col = kind === 'hazard' ? '255,60,60' : kind === 'special' ? '70,235,110' : '70,150,255';
+      ctx.strokeStyle = `rgba(${col},.95)`; ctx.fillStyle = `rgba(${col},.22)`;
+      if (typeof SAW_WIDTH !== 'undefined' && SAW_WIDTH[o.id]) {
+        const [sx, sy] = toScreen(o.x, o.y), r = 0.3 * SAW_WIDTH[o.id] * Math.max(o.sx, o.sy) * view.zoom;
+        ctx.beginPath(); ctx.arc(sx, sy, r, 0, 6.2832); ctx.fill(); ctx.stroke(); continue;
+      }
+      const [w, h] = hitSize(o.id, [1, 1]), b = objBox(o, w, h, 0, 0);
+      const [ax, ay] = toScreen(b.l, b.t), [bx, by] = toScreen(b.r, b.b);
+      ctx.fillRect(ax, ay, bx - ax, by - ay); ctx.strokeRect(ax, ay, bx - ax, by - ay);
+    }
+    ctx.restore();
+  }
+  { const _draw = draw; draw = function () { _draw(); drawHitboxes(); }; }
   const setters = {
+    hitbox: () => draw(),
     preview: v => { tl.pv = v; if ($('tlPv')) $('tlPv').checked = v; tl.cacheX = null; draw(); },
     shader: v => { tl.pv = v; if ($('tlPv')) $('tlPv').checked = v; tl.cacheX = null; draw(); },
     invis: v => { opt.trig = !v; if ($('tTrig')) $('tTrig').checked = !v; draw(); },
@@ -4417,8 +4456,9 @@ function stopPlay() {
     txt(root, 'big', 'More:', 38, P(1224, 125, 180, 50));
     nbtn(root, 'GJ_button_04', null, P(1224, 197, 90, 90), null, '+', 'big', 60);
     // game type
-    nbtn(root, 'GJ_button_01', null, P(538, 405, 385, 78), null, 'Classic', 'gold', 54);
-    nbtn(root, 'GJ_button_04', null, P(977, 405, 385, 78), null, 'Platformer', 'gold', 54);
+    const plat = hdrGet('kA22') === '1';
+    nbtn(root, plat ? 'GJ_button_04' : 'GJ_button_01', null, P(538, 405, 385, 78), () => { hdrSet('kA22', 0); open(settingsDialog); }, 'Classic', 'gold', 54);
+    nbtn(root, plat ? 'GJ_button_01' : 'GJ_button_04', null, P(977, 405, 385, 78), () => { hdrSet('kA22', 1); open(settingsDialog); }, 'Platformer', 'gold', 54);
     songBox();
     // previews of the background, ground and middleground
     const pv = (name, y, fn) => { const b = mk('button', 'a press', root); put(b, P(1382, y, 142, 142)); b.style.border = `calc(4 * var(--k)) solid #000`; b.style.background = '#000'; frame(b, name, { cx: 0, cy: 0, w: 142, h: 142 }, 'left:0;top:0;width:100%;height:100%'); b.onclick = fn; };
@@ -4478,7 +4518,7 @@ function stopPlay() {
   }
   // the level options: how the player starts (read by the Play button)
   function optionsDialog() {
-    const o = smallDialog(1000, 640, 'Level Options', 80);
+    const o = smallDialog(1000, 820, 'Level Options', 80);
     const row = (y, label, key) => {
       const on = hdrGet(key) === '1';
       txt(root, 'gold', label, 54, o(380, y, 640, 70), 'left');
@@ -4487,7 +4527,9 @@ function stopPlay() {
     row(230, 'Mini Mode', 'kA3');
     row(350, 'Upside Down', 'kA11');
     row(470, 'Dual Mode', 'kA8');
-    nbtn(root, 'GJ_button_01', null, o(500, 580, 190, 90), back, 'OK', 'gold', 60);
+    row(590, 'Two Player', 'kA10');                       // key types and offsets read from LevelSettingsObject's parser in the exe (kA10 = bool)
+    row(710, 'Reverse', 'kA20');
+    nbtn(root, 'GJ_button_01', null, o(500, 770, 190, 90), back, 'OK', 'gold', 60);
   }
   function fontDialog() {
     const o = smallDialog(1200, 760, 'Select Font', 80);
@@ -4548,7 +4590,13 @@ function stopPlay() {
     1268: ['Spawn', [T_, [63, 'Delay:', 0, 0, 99, 0.1]]],
     1912: ['Random', [T_, [71, 'Group 2:', 0, 0, 9999, 1], [10, 'Chance %:', 50, 0, 100, 5]]],
     1913: ['Zoom', [[10, 'Time:', 0, 0, 99, 0.1], [371, 'Zoom:', 1, 0.1, 10, 0.1], [30, 'Easing:', 0, 0, 18, 1]]],
-    1006: ['Pulse', [T_, [45, 'Fade in:', 0, 0, 99, 0.1], [46, 'Hold:', 0, 0, 99, 0.1], [47, 'Fade out:', 0, 0, 99, 0.1]]]
+    1916: ['Camera Offset', [[28, 'Offset X:', 0, -9999, 9999, 10], [29, 'Offset Y:', 0, -9999, 9999, 10], [10, 'Time:', 0, 0, 99, 0.1], [30, 'Easing:', 0, 0, 18, 1]]],
+    2015: ['Camera Rotate', [[68, 'Degrees:', 0, -9999, 9999, 15], [70, 'Add (1/0):', 0, 0, 1, 1], [10, 'Time:', 0, 0, 99, 0.1], [30, 'Easing:', 0, 0, 18, 1]]],
+    1914: ['Static Camera', [[71, 'Follow group:', 0, 0, 9999, 1], [10, 'Time:', 0, 0, 99, 0.1], [30, 'Easing:', 0, 0, 18, 1], [141, 'X only (1/0):', 0, 0, 1, 1], [142, 'Y only (1/0):', 0, 0, 1, 1], [212, 'Exit (1/0):', 0, 0, 1, 1]]],
+    1935: ['Time Warp', [[120, 'Time mod:', 1, 0.1, 2, 0.1]]],
+    1817: ['Pickup', [[80, 'Item ID:', 0, 0, 9999, 1], [77, 'Count:', 0, -9999, 9999, 1]]],
+    1611: ['Count', [[80, 'Item ID:', 0, 0, 9999, 1], [77, 'Target count:', 0, -9999, 9999, 1], [51, 'Target group:', 0, 0, 9999, 1], [56, 'Activate (1/0):', 0, 0, 1, 1]]],
+    1811: ['Instant Count', [[80, 'Item ID:', 0, 0, 9999, 1], [77, 'Target count:', 0, -9999, 9999, 1], [51, 'Target group:', 0, 0, 9999, 1], [56, 'Activate (1/0):', 0, 0, 1, 1]]],    1006: ['Pulse', [T_, [45, 'Fade in:', 0, 0, 99, 0.1], [46, 'Hold:', 0, 0, 99, 0.1], [47, 'Fade out:', 0, 0, 99, 0.1]]]
   };
   const specialOf = () => { const p = selObjs()[selObjs().length - 1]; return p && SPECIAL[p.id] ? SPECIAL[p.id] : null; };
   function editSpecialDialog() {
