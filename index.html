@@ -329,12 +329,13 @@ function parseLevel(levelStr) {
   const parts = levelStr.split(';');
   const channels = parseChannels(parts[0]);
   const objs = [];
+  const extra = [];
   for (let i = 1; i < parts.length; i++) {
     const f = parts[i].split(',');
-    if (f.length < 4) continue;
+    if (f.length < 4) { if (parts[i] !== '') extra.push(parts[i]); continue; }
     const p = {};
     for (let j = 0; j + 1 < f.length; j += 2) p[f[j]] = f[j + 1];
-    if (p['1'] === undefined || p['2'] === undefined || p['3'] === undefined) continue;
+    if (p['1'] === undefined || p['2'] === undefined || p['3'] === undefined) { extra.push(parts[i]); continue; }
     const id = Number(p['1']);
     const uni = p['32'] !== undefined ? Number(p['32']) : 1;
     objs.push({
@@ -350,16 +351,17 @@ function parseLevel(levelStr) {
       zo: p['25'] !== undefined ? Number(p['25']) : 0,
       idx: objs.length,
       groups: p['57'] || '',
-      raw: p
+      raw: p, fields: f, src: parts[i], dirty: false, scaleDirty: false, uni
     });
   }
   const zSorted = objs.slice().sort((a, b) => (a.zl - b.zl) || (a.zo - b.zo) || (a.idx - b.idx));
-  return { channels, objs, header: parts[0], zSorted };
+  return { channels, objs, header: parts[0], zSorted, extra, nextIdx: objs.length, edited: false };
 }
 
 // ---------- state ----------
 let level = null;
 let meta = {};
+let srcDoc = null;          // the file the open level came from (used when saving)
 let view = { cx: 0, cy: 0, zoom: 0.5 };
 let highlight = null;      // object ID being highlighted
 let hover = null;
@@ -749,9 +751,14 @@ function draw() {
       ctx.strokeRect(sx - r, sy - r, r * 2, r * 2);
     }
   }
-  if (view.selected && visible(view.selected)) {
-    const so = view.selected, [ssx, ssy] = toScreen(so.x, so.y), sr = Math.max(8, 18 * Math.max(so.sx, so.sy) * view.zoom);
-    ctx.strokeStyle = '#9dff4a'; ctx.lineWidth = 3; ctx.strokeRect(ssx - sr, ssy - sr, sr * 2, sr * 2);
+  {
+    const picked = (view.selAll && view.selAll.length) ? view.selAll : (view.selected ? [view.selected] : []);
+    ctx.strokeStyle = '#9dff4a'; ctx.lineWidth = 3;
+    for (const so of picked) {
+      if (!visible(so)) continue;
+      const [ssx, ssy] = toScreen(so.x, so.y), sr = Math.max(8, 18 * Math.max(so.sx, so.sy) * view.zoom);
+      ctx.strokeRect(ssx - sr, ssy - sr, sr * 2, sr * 2);
+    }
   }
   if (hover) {
     const [sx, sy] = toScreen(hover.x, hover.y), r = Math.max(7, 18 * Math.max(hover.sx, hover.sy) * view.zoom);
@@ -877,6 +884,7 @@ async function loadFromText(raw, name) {
   $('err').style.display = 'none';
   const xml = await readLevelText(raw);
   meta = parsePlist(xml);
+  srcDoc = { xml, kind: raw.trim().startsWith('H4sI') ? 'gdlvl' : 'gmd', name };
   if (!meta.k4) throw new Error('No level data (k4) found in that file.');
   const levelStr = await decodeB64Gz(meta.k4);
   level = parseLevel(levelStr);
@@ -1383,14 +1391,375 @@ setTab('build');
 
 <script>
 "use strict";
-// ================= public build: own effect shader, empty start =================
-// friendly empty state: no level ships with this page
+// ================= level editing and saving =================
+// Edits live in this page's memory. "Save" downloads a NEW file; your original is never touched.
+const NUDGE = 30;                       // one block
+const hist = { undo: [], redo: [] };
+let editMode = false;                   // off: drag pans the view. on: drag moves selected objects
+let snapOn = true;
+view.selAll = [];
+
+const selList = () => view.selAll || [];
+function setSel(list, primary) {
+  view.selAll = list;
+  view.selected = primary !== undefined ? primary : (list.length ? list[list.length - 1] : null);
+}
+
+// ---------- operations (each one can be undone and redone) ----------
+const snapState = o => ({ x: o.x, y: o.y, rot: o.rot, sx: o.sx, sy: o.sy, flipX: o.flipX, flipY: o.flipY, scaleDirty: o.scaleDirty });
+const restoreState = (o, s) => Object.assign(o, s);
+
+function opMove(items) {                // items: [{o, from:[x,y], to:[x,y]}]
+  return {
+    name: 'move', structural: false,
+    do() { for (const it of items) { it.o.x = it.to[0]; it.o.y = it.to[1]; it.o.dirty = true; } },
+    undo() { for (const it of items) { it.o.x = it.from[0]; it.o.y = it.from[1]; it.o.dirty = true; } }
+  };
+}
+function opProps(objs, mutate, name) {
+  const before = objs.map(o => ({ o, s: snapState(o) }));
+  let after = null;
+  return {
+    name, structural: false,
+    do() {
+      if (after) { for (const a of after) { restoreState(a.o, a.s); a.o.dirty = true; } return; }
+      for (const o of objs) { mutate(o); o.dirty = true; }
+      after = objs.map(o => ({ o, s: snapState(o) }));
+    },
+    undo() { for (const b of before) { restoreState(b.o, b.s); b.o.dirty = true; } }
+  };
+}
+function opDelete(objs) {
+  const set = new Set(objs);
+  let removed = null;
+  return {
+    name: 'delete', structural: true,
+    do() {
+      removed = []; const keep = [];
+      level.objs.forEach((o, i) => { if (set.has(o)) removed.push({ o, i }); else keep.push(o); });
+      level.objs = keep;
+    },
+    undo() { for (const r of removed) level.objs.splice(r.i, 0, r.o); }   // ascending order restores positions
+  };
+}
+function opAdd(objs) {
+  return {
+    name: 'duplicate', structural: true,
+    do() { level.objs.push(...objs); },
+    undo() { const s = new Set(objs); level.objs = level.objs.filter(o => !s.has(o)); }
+  };
+}
+function pushOp(op, selectAfter) {
+  op.do();
+  hist.undo.push(op);
+  if (hist.undo.length > 200) hist.undo.shift();
+  hist.redo.length = 0;
+  level.edited = true;
+  if (selectAfter !== undefined) setSel(selectAfter);
+  afterEdit(op.structural);
+}
+function undoEdit() {
+  const op = hist.undo.pop(); if (!op) return;
+  op.undo(); hist.redo.push(op);
+  pruneSelection(); afterEdit(op.structural);
+}
+function redoEdit() {
+  const op = hist.redo.pop(); if (!op) return;
+  op.do(); hist.undo.push(op);
+  pruneSelection(); afterEdit(op.structural);
+}
+function pruneSelection() {
+  const alive = new Set(level.objs);
+  const keep = selList().filter(o => alive.has(o));
+  setSel(keep, keep.includes(view.selected) ? view.selected : undefined);
+}
+function afterEdit(structural) {
+  if (structural) {
+    level.zSorted = level.objs.slice().sort((a, b) => (a.zl - b.zl) || (a.zo - b.zo) || (a.idx - b.idx));
+    pruneSelection();
+  }
+  renderUi(lastName);
+  updateEditUi();
+  draw();
+}
+
+// ---------- the actions on the current selection ----------
+function act(name) {
+  const sel = selList();
+  if (name === 'undo') return undoEdit();
+  if (name === 'redo') return redoEdit();
+  if (name === 'clear') { setSel([]); renderEdit(); draw(); return; }
+  if (!sel.length) return;
+  const mv = (dx, dy) => pushOp(opMove(sel.map(o => ({ o, from: [o.x, o.y], to: [o.x + dx, o.y + dy] }))));
+  switch (name) {
+    case 'left': return mv(-NUDGE, 0);
+    case 'right': return mv(NUDGE, 0);
+    case 'up': return mv(0, NUDGE);
+    case 'down': return mv(0, -NUDGE);
+    case 'rotL90': return pushOp(opProps(sel, o => { o.rot = ((o.rot - 90) % 360 + 360) % 360; }, 'rotate'));
+    case 'rotR90': return pushOp(opProps(sel, o => { o.rot = ((o.rot + 90) % 360 + 360) % 360; }, 'rotate'));
+    case 'rotL15': return pushOp(opProps(sel, o => { o.rot = ((o.rot - 15) % 360 + 360) % 360; }, 'rotate'));
+    case 'rotR15': return pushOp(opProps(sel, o => { o.rot = ((o.rot + 15) % 360 + 360) % 360; }, 'rotate'));
+    case 'flipX': return pushOp(opProps(sel, o => { o.flipX = !o.flipX; }, 'flip'));
+    case 'flipY': return pushOp(opProps(sel, o => { o.flipY = !o.flipY; }, 'flip'));
+    case 'scaleUp': return pushOp(opProps(sel, o => { o.sx *= 1.25; o.sy *= 1.25; o.scaleDirty = true; }, 'scale'));
+    case 'scaleDown': return pushOp(opProps(sel, o => { o.sx /= 1.25; o.sy /= 1.25; o.scaleDirty = true; }, 'scale'));
+    case 'dup': {
+      const copies = sel.map(o => Object.assign({}, o, {
+        x: o.x + NUDGE, fields: o.fields.slice(), raw: Object.assign({}, o.raw),
+        dirty: true, src: null, idx: level.nextIdx++
+      }));
+      return pushOp(opAdd(copies), copies);
+    }
+    case 'del': return pushOp(opDelete(sel), []);
+    case 'selId': {
+      const id = view.selected && view.selected.id;
+      if (id === undefined || id === null) return;
+      const all = level.objs.filter(o => o.id === id);
+      setSel(all); renderEdit(); draw(); return;
+    }
+  }
+}
+
+// ---------- saving ----------
+const fmtNum = n => String(Math.round(n * 1000) / 1000);
+function objSegment(o) {
+  if (!o.dirty && o.src != null) return o.src;               // untouched objects are written back exactly as read
+  const f = o.fields.slice();
+  const at = key => { for (let i = 0; i + 1 < f.length; i += 2) if (f[i] === key) return i; return -1; };
+  const put = (key, val) => { const i = at(key); if (i >= 0) f[i + 1] = String(val); else f.push(key, String(val)); };
+  put('2', fmtNum(o.x)); put('3', fmtNum(o.y));
+  if (o.rot !== 0 || at('6') >= 0) put('6', fmtNum(o.rot));
+  if (o.flipX) put('4', '1'); else if (at('4') >= 0) put('4', '0');
+  if (o.flipY) put('5', '1'); else if (at('5') >= 0) put('5', '0');
+  if (o.scaleDirty) { put('128', fmtNum(o.sx / o.uni)); put('129', fmtNum(o.sy / o.uni)); }
+  return f.join(',');
+}
+async function gzipText(text) {
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+function bytesToB64Url(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_');
+}
+function replaceKey(xml, key, tag, value) {
+  const re = new RegExp('(<k>' + key + '</k><' + tag + '>)[^<]*(</' + tag + '>)');
+  if (!re.test(xml)) return xml;
+  return xml.replace(re, (m, a, b) => a + value + b);
+}
+function currentLevelString() {
+  return level.header + ';' + level.objs.map(objSegment).concat(level.extra || []).join(';') + ';';
+}
+async function buildSaveFile() {
+  if (!level || !srcDoc) throw new Error('No level is open.');
+  const k4 = bytesToB64Url(await gzipText(currentLevelString()));
+  let xml = replaceKey(srcDoc.xml, 'k4', 's', k4);
+  xml = replaceKey(xml, 'k48', 'i', String(level.objs.length));
+  return srcDoc.kind === 'gdlvl' ? bytesToB64Url(await gzipText(xml)) : xml;
+}
+async function saveLevel() {
+  try {
+    const text = await buildSaveFile();
+    const base = (srcDoc.name || 'level').replace(/\.(gdlvl|gmd)$/i, '');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+    a.download = base + '-edited.' + srcDoc.kind;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+    level.edited = false; updateEditUi(); renderUi(lastName);
+    $('saveNote').textContent = 'Saved as ' + a.download + ' (a new file; your original is unchanged).';
+  } catch (e) { showError(e); }
+}
+
+// ---------- UI: rail buttons, edit toolbar, menu, delete tab ----------
+(function addStyles() {
+  const s = document.createElement('style');
+  s.textContent =
+    '.mini{width:40px;height:40px;border-radius:9px;border:3px solid var(--edge);color:#fff;font:inherit;font-size:16px;cursor:pointer;' +
+    'background:linear-gradient(180deg,var(--btn1),var(--btn2));box-shadow:inset 0 2px 0 rgba(255,255,255,.3),0 2px 0 rgba(0,0,0,.45)}' +
+    '.mini:hover{filter:brightness(1.12)} .mini[disabled]{filter:grayscale(1) brightness(.55);cursor:not-allowed}' +
+    '.mini.red{background:linear-gradient(180deg,#ff8a8a,#c43232)} .mini.green{background:linear-gradient(180deg,var(--green1),var(--green2))}' +
+    '.tools{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;align-items:center}' +
+    '.tools .sep{width:10px} #btnMove.on{background:linear-gradient(180deg,var(--green1),var(--green2))}' +
+    '.editnote{margin-top:8px}';
+  document.head.appendChild(s);
+})();
+
+(function addRailAndMenu() {
+  const move = document.createElement('button');
+  move.className = 'gdbtn'; move.id = 'btnMove';
+  move.title = 'Move mode: drag selected objects (off: drag pans the view)';
+  move.innerHTML = '<span class="fb">&#10021;</span>';
+  $('rail').appendChild(move);
+  move.onclick = () => {
+    editMode = !editMode;
+    move.classList.toggle('on', editMode);
+    canvas.style.cursor = editMode ? 'default' : '';
+    $('bottomNote').textContent = editMode ? 'move mode · drag objects · shift-click adds to selection' : 'drag to pan · wheel to zoom · click an object to inspect';
+  };
+  const u = $('btnUndo'), r = $('btnRedo');
+  u.title = 'Undo'; r.title = 'Redo';
+  u.onclick = () => act('undo'); r.onclick = () => act('redo');
+  // the old "view only" labels no longer apply
+  $('btnPlay').title = 'Playtest (not available in this viewer)';
+  $('btnStop').title = 'Stop (not available in this viewer)';
+
+  const row = document.createElement('div');
+  row.className = 'menuRow';
+  row.innerHTML = '<button class="gdbtn wide green" id="btnSave">Save edited level&hellip;</button><span class="small" id="saveNote">Edits are kept in this page. Saving downloads a new file and never changes your original.</span>';
+  const first = $('menuBox').querySelector('.menuRow');
+  $('menuBox').insertBefore(row, first);
+  $('btnSave').onclick = saveLevel;
+
+  $('bottomNote').textContent = 'drag to pan · wheel to zoom · click an object to inspect';
+  const del = $('panelDelete');
+  del.innerHTML =
+    '<div class="label" style="font-size:16px">Delete</div>' +
+    '<p class="small">Removes the selected objects from this page\'s copy of the level. You can undo it. Nothing is saved until you choose "Save edited level".</p>' +
+    '<div class="tools"><button class="mini red" data-act="del" title="Delete selected (Delete key)">&#128465;</button>' +
+    '<button class="mini" data-act="undo" title="Undo (Ctrl+Z)">&#8630;</button><span class="small" id="delCount"></span></div>';
+  del.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (b) act(b.dataset.act); });
+})();
+
+const _renderEditView = renderEdit;
+renderEdit = function () {
+  _renderEditView();
+  const sel = selList();
+  const box = $('editInfo');
+  if (sel.length > 1) {
+    box.insertAdjacentHTML('afterbegin', `<div class="label" style="font-size:15px;margin-bottom:6px">${sel.length} objects selected</div>`);
+  }
+  const dis = sel.length ? '' : ' disabled';
+  const b = (a, t, title, cls = '') => `<button class="mini ${cls}" data-act="${a}" title="${title}"${dis}>${t}</button>`;
+  box.insertAdjacentHTML('beforeend',
+    '<div class="tools">' +
+    b('left', '&larr;', 'Move left one block') + b('up', '&uarr;', 'Move up one block') + b('down', '&darr;', 'Move down one block') + b('right', '&rarr;', 'Move right one block') +
+    '<span class="sep"></span>' +
+    b('rotL90', '&#8634;', 'Rotate 90 degrees left') + b('rotR90', '&#8635;', 'Rotate 90 degrees right') +
+    b('rotL15', '-15', 'Rotate 15 degrees left') + b('rotR15', '+15', 'Rotate 15 degrees right') +
+    '<span class="sep"></span>' +
+    b('flipX', '&harr;', 'Flip horizontally') + b('flipY', '&varr;', 'Flip vertically') +
+    b('scaleDown', '&minus;', 'Smaller (÷1.25)') + b('scaleUp', '+', 'Bigger (×1.25)') +
+    '<span class="sep"></span>' +
+    b('dup', '&#10697;', 'Duplicate (Ctrl+D)', 'green') + b('del', '&#128465;', 'Delete (Delete key)', 'red') + b('selId', 'ID', 'Select every object with this ID') +
+    '</div>' +
+    '<div class="small editnote"><label><input type="checkbox" id="snapChk"' + (snapOn ? ' checked' : '') + '> snap drags to the block grid</label> · ' +
+    'turn on Move mode (&#10021; in the left rail) to drag objects</div>');
+  const chk = $('snapChk'); if (chk) chk.onchange = () => { snapOn = chk.checked; };
+  const dc = $('delCount'); if (dc) dc.textContent = sel.length ? sel.length + ' selected' : 'nothing selected';
+};
+$('editInfo').addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (b && !b.disabled) act(b.dataset.act); });
+// the Edit tab's empty message should mention selection
+const _renderEdit2 = renderEdit;
+
+function updateEditUi() {
+  $('btnUndo').disabled = hist.undo.length === 0;
+  $('btnRedo').disabled = hist.redo.length === 0;
+  const name = (meta && meta.k2) || lastName || 'Level';
+  document.title = (level && level.edited ? '* ' : '') + name + ' - Level Viewer';
+}
+const _renderUi = renderUi;
+renderUi = function (n) {
+  _renderUi(n);
+  if (level && level.edited) $('objCount').textContent += ' · edited';
+};
+
+// ---------- mouse: move selected objects ----------
+let drag = null;
+let prevSel = [];
+let downAt = null;
+canvas.addEventListener('pointerdown', e => {
+  if (!editMode || e.button !== 0 || !level) return;
+  const r = canvas.getBoundingClientRect();
+  updateHover(e.clientX - r.left, e.clientY - r.top);
+  const hit = hover;
+  if (!hit) return;                                   // empty space: pan as usual
+  e.stopImmediatePropagation();
+  if (e.shiftKey) {
+    const list = selList().slice(), i = list.indexOf(hit);
+    if (i >= 0) list.splice(i, 1); else list.push(hit);
+    setSel(list, i >= 0 ? undefined : hit);
+    renderEdit(); draw(); return;
+  }
+  if (!selList().includes(hit)) setSel([hit]);
+  drag = { sx: e.clientX, sy: e.clientY, items: selList().map(o => ({ o, from: [o.x, o.y] })), moved: false };
+  canvas.setPointerCapture(e.pointerId);
+  setTab('edit'); renderEdit(); draw();
+}, true);
+canvas.addEventListener('pointermove', e => {
+  if (!drag) return;
+  e.stopImmediatePropagation();
+  let dx = (e.clientX - drag.sx) / view.zoom, dy = -(e.clientY - drag.sy) / view.zoom;
+  if (snapOn) { dx = Math.round(dx / NUDGE) * NUDGE; dy = Math.round(dy / NUDGE) * NUDGE; }
+  if (dx !== 0 || dy !== 0) drag.moved = true;
+  for (const it of drag.items) { it.o.x = it.from[0] + dx; it.o.y = it.from[1] + dy; }
+  draw();
+}, true);
+canvas.addEventListener('pointerup', e => {
+  if (!drag) return;
+  e.stopImmediatePropagation();
+  const d = drag; drag = null;
+  if (!d.moved) return;
+  const items = d.items.map(it => ({ o: it.o, from: it.from, to: [it.o.x, it.o.y] }));
+  pushOp(opMove(items));                              // positions are already applied; this records the undo step
+}, true);
+
+// view mode / empty-space clicks: keep the multi-selection in step with the single-selection click handler
+canvas.addEventListener('pointerdown', e => { prevSel = selList().slice(); downAt = [e.clientX, e.clientY]; });
+canvas.addEventListener('pointerup', e => {
+  if (drag || !downAt) return;
+  const moved = Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]);
+  downAt = null;
+  if (moved > 4) return;                              // a pan, not a click
+  const s = view.selected;
+  if (e.shiftKey && s) {
+    const list = prevSel.slice(), i = list.indexOf(s);
+    if (i >= 0) list.splice(i, 1); else list.push(s);
+    setSel(list, i >= 0 ? undefined : s);
+  } else {
+    view.selAll = s ? [s] : [];
+  }
+  renderEdit(); draw();
+});
+
+// ---------- keyboard ----------
+addEventListener('keydown', e => {
+  if (e.target && /input|textarea|select/i.test(e.target.tagName)) return;
+  if (!level) return;
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (ctrl && e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); act('undo'); }
+  else if (ctrl && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) { e.preventDefault(); act('redo'); }
+  else if (ctrl && e.key.toLowerCase() === 'd') { e.preventDefault(); act('dup'); }
+  else if (ctrl && e.key.toLowerCase() === 's') { e.preventDefault(); saveLevel(); }
+  else if (e.key === 'Delete' || e.key === 'Backspace') { if (selList().length) { e.preventDefault(); act('del'); } }
+  else if (e.key.startsWith('Arrow') && selList().length) { e.preventDefault(); act({ ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' }[e.key]); }
+});
+
+// ---------- opening another level ----------
+const _loadFromTextEdit = loadFromText;
+loadFromText = async function (raw, name) {
+  if (level && level.edited && typeof confirm === 'function' &&
+      !confirm('This level has edits that are not saved. Open another level and discard them?')) return;
+  hist.undo.length = 0; hist.redo.length = 0;
+  setSel([]);
+  await _loadFromTextEdit(raw, name);
+  if (level) level.edited = false;
+  updateEditUi(); renderEdit();
+};
+addEventListener('beforeunload', e => { if (level && level.edited) { e.preventDefault(); e.returnValue = ''; } });
+updateEditUi();
+</script>
+<script>
+"use strict";
+// ================= public build: empty start =================
 (function () {
   const el = document.createElement('div');
   el.id = 'empty';
   el.innerHTML =
     '<div class="label" style="font-size:24px;margin-bottom:6px">Level Viewer</div>' +
-    '<div class="small" style="font-size:14px;margin-bottom:14px">A view-only look at Geometry Dash levels with the editor\'s own look.<br>Open a <b>.gdlvl</b> or <b>.gmd</b> file, or drop one on this page.</div>' +
+    '<div class="small" style="font-size:14px;margin-bottom:14px">View and edit Geometry Dash level files with the editor\'s own look.<br>Open a <b>.gdlvl</b> or <b>.gmd</b> file, or drop one on this page.</div>' +
     '<button class="gdbtn wide green" id="emptyOpen">Open a level&hellip;</button>' +
     '<div class="small" style="margin-top:14px">Sprites are read from <i>your own</i> copy of the game: Menu &rarr; Choose Resources folder.<br>Nothing from the game is included in this page or uploaded anywhere.</div>';
   $('stage').appendChild(el);
