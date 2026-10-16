@@ -3581,8 +3581,9 @@ function stopPlay() {
   });
 
   // ----- edit tab -----
-  S.step = 1;
-  const STEPS = [8, 4, 2, 1, 0.5, 0.25, 0.125, 1 / 16, 1 / 30];
+  S.step = 30;
+  // move amounts (px) from EditorUI::moveForCommand in the exe: 5 blocks, 1 block, 1/2, 1/4, 1/8, 2, 0.5, 0.1 (+3x zoom step)
+  const STEPS = [150, 30, 15, 7.5, 3.75, 2, 0.5, 0.1, 90];
   const STEP_IC = [['edit_upBtn3', 'ffffff'], ['edit_upBtn2', 'ffffff'], ['edit_upBtn', 'ff7bd0'], ['edit_upBtn5', 'ffffff'], ['edit_upBtn5', 'ffffff'], ['edit_upBtn5', 'ffffff'],
     ['edit_upBtn', 'ffd400'], ['edit_upBtn', 'ffd400'], ['edit_upBtn', 'ffd400']];
   const stepBtns = [];
@@ -3595,19 +3596,19 @@ function stopPlay() {
     S.step = STEPS[i];
     stepBtns.forEach((b, j) => recolor(b, j === i ? 'GJ_button_02' : 'GJ_button_04', j === i ? null : GREY));
     const v = S.step;
-    stepText.src = textURL(v >= 1 ? String(v) : (v === 0.5 ? '1/2' : v === 0.25 ? '1/4' : v === 0.125 ? '1/8' : v > 0.05 ? '1/16' : '1/30'), Math.round(60 * S.k));
+    stepText.src = textURL(String(v), Math.round(60 * S.k));
     stepText._v = v;
   }
   [[518, 838, -90, 'up'], [518, 1010, 90, 'down'], [400, 925, 0, 'left'], [636, 925, 180, 'right']].forEach(([cx, cy, rot, dir]) => {
     const b = inPane('edit', put(mk('button', 'a rb hid'), PO({ cx, cy, w: 112, h: 112 })));
     const i = b.appendChild(img()); i.style.transform = `rotate(${rot}deg)`; live(i, frameIcon(FR.earrow));
     b.title = 'Move ' + dir;
-    b.onclick = () => { const d = 30 * S.step; moveBy(dir === 'left' ? -d : dir === 'right' ? d : 0, dir === 'up' ? d : dir === 'down' ? -d : 0); };
+    b.onclick = () => { const d = S.step; moveBy(dir === 'left' ? -d : dir === 'right' ? d : 0, dir === 'up' ? d : dir === 'down' ? -d : 0); };
   });
   STEPS.forEach((v, i) => {
     const cx = 790 + (i % 3) * 114.5, cy = [828, 922, 1016][Math.floor(i / 3)];
     const [ic, hex] = STEP_IC[i];
-    const b = paneSquare('edit', 'GJ_button_04', GREY, { cx, cy, w: 104, h: 90 }, () => frameURL(ic + '_001.png', hex), () => setStep(i), 'Move step: ' + (v >= 1 ? v + ' block(s)' : '1/' + Math.round(1 / v) + ' block'));
+    const b = paneSquare('edit', 'GJ_button_04', GREY, { cx, cy, w: 104, h: 90 }, () => frameURL(ic + '_001.png', hex), () => setStep(i), 'Move step: ' + v + ' units');
     stepBtns.push(b);
   });
   const rot = (d) => () => { const sel = selList(); if (!sel.length) return; pushOp(opProps(sel, o => { o.rot = ((o.rot + d) % 360 + 360) % 360; }, 'rotate')); };
