@@ -2819,18 +2819,29 @@ function defaultMainFor(o) {
 </script>
 <script>
 "use strict";
-// ================= playable cube preview =================
-// Written from the player-physics decompilation (camila314/gdp): the 240 Hz sub-step loop, per-speed jump/gravity table,
-// cube jump and gravity rules, the solid-block landing/crash rules, the slope surface line and ride/exit rules, and the 9x9
-// kill hitbox. Cube only, classic mode. Gravity is handled by mirroring the vertical axis (p.g = 1 or -1).
-// Not simulated: other vehicles, moving or toggled objects, portals other than speed and gravity. Pad and orb strengths,
-// spike and portal hitboxes and the slope launch on leaving a ramp are estimates (they are not in the physics repo).
+// ================= playable preview (all vehicles) =================
+// Written from the game's own code (GeometryDash.exe, read with RobTop's permission): PlayerObject::update, updateJump,
+// setPlayerSpeed, ringJump and the pad handler. From those: the 240 Hz sub-step loop, the per-speed jump/gravity table,
+// the 0.9 time scale on everything vertical, cube/ship/UFO/ball/wave/robot/spider/swing movement, gravity-flip halving,
+// pad and orb strengths for every vehicle, mini size. The solid-block landing/crash rules and the slope surface line come
+// from the community physics repo (camila314/gdp). Gravity is handled by mirroring the vertical axis (p.g = 1 or -1).
+// Not simulated: moving or toggled objects, dual mode, dash orbs, the black orb. Hitbox sizes, the floor/ceiling height
+// of a vehicle section, the slope launch on leaving a ramp and the spider's teleport are estimates.
 window.play = {
   active: false, dead: 0, attempt: 0, x: -30, ym: 15, lym: 15, yv: 0, g: 1, onGround: true, boosted: false, rot: 0,
   hold: false, press: false, world: null, raf: 0, last: 0, camY: 85, best: 0, done: 0, touched: new Set(), orbUsed: new Set(), icon: null,
-  isOnSlope: false, wasOnSlope: false, slopeVel: 0, slopeRot: 0, shown: 0
+  isOnSlope: false, wasOnSlope: false, slopeVel: 0, slopeRot: 0, shown: 0,
+  mode: 'cube', mini: false, floorY: 0, ceilY: null, boostT: 9, robotUp: false, spin: 0
 };
 const PLAYER = { half: 15, small: 4.5, snap: 10, maxFall: 15, startX: -30 };
+const VEH_G = 0.958199;                                            // gravity constant of every vehicle (rdata 0x830a1c)
+const TIME_Y = 0.9;                                                // dt * 0.9 for gravity and vertical movement (PlayerObject::update)
+// the level header's start mode (kA2) and the portals that switch mode
+const MODE_BY_KA2 = ['cube', 'ship', 'ball', 'ufo', 'wave', 'robot', 'spider', 'swing'];
+const MODE_PORTAL = { 12: 'cube', 13: 'ship', 47: 'ball', 111: 'ufo', 660: 'wave', 745: 'robot', 1331: 'spider', 1933: 'swing' };
+const CEILING_MODES = new Set(['ship', 'ufo', 'ball', 'wave', 'spider', 'swing']);
+function playHalf() { const p = play; return (p.mode === 'wave' ? 9 : PLAYER.half) * (p.mini ? 0.6 : 1); }
+function playSmall() { return PLAYER.small * (play.mini ? 0.6 : 1); }
 // jump strength and gravity per player speed (units/second -> the game's updateTimeMod table)
 function physFor(v) {
   if (Math.abs(v - 251.16) < 1) return { ys: 10.620032, g: 0.940199 };
@@ -2838,8 +2849,38 @@ function physFor(v) {
   if (Math.abs(v - 387.42) < 1) return { ys: 11.420032, g: 0.957199 };
   return { ys: 11.230032, g: 0.961199 };                          // 3x and 4x
 }
-const PAD_BOOST = { 35: 16, 140: 10, 1332: 20 };                   // yellow, pink, red pads (estimates)
-const ORB_BOOST = { 36: 11.18, 141: 7.4, 1333: 14.9 };            // yellow, pink, red orbs (estimates)
+// pads: 35 yellow, 140 pink, 1332 red, 67 blue (gravity). orbs: 36 yellow, 141 pink, 1333 red, 84 blue (gravity), 1022 green (gravity)
+const PAD_KIND = { 35: 'yellow', 140: 'pink', 1332: 'red', 67: 'blue' };
+const ORB_KIND = { 36: 'yellow', 141: 'pink', 1333: 'red', 84: 'blue', 1022: 'green' };
+// the launch of a pad: 16 * a multiplier per pad and vehicle, 0.8 when mini, 0.6 more for ball/spider/swing (PlayerObject::bumpPlayer)
+function padLaunch(kind) {
+  const p = play, m = p.mode;
+  let k = 1;
+  if (kind === 'pink') k = m === 'ship' ? 0.35 : m === 'ufo' ? 0.4 : (m === 'ball' || m === 'spider') ? 0.7 : 0.65;
+  else if (kind === 'red') k = m === 'ship' ? (p.mini ? 0.95 : 0.63) : m === 'ufo' ? (p.mini ? 0.98 : 0.6) : 1.25;
+  else if (kind === 'blue') k = 0.8;
+  let v = 16 * k * (p.mini ? 0.8 : 1);
+  if (m === 'ball' || m === 'spider' || m === 'swing') v *= 0.6;
+  return v;
+}
+// the launch of an orb: the jump strength of the current speed * a multiplier per orb and vehicle (PlayerObject::ringJump)
+function orbLaunch(kind, jump) {
+  const p = play, m = p.mode;
+  let k = 1;
+  if (kind === 'blue') k = 0.8;
+  else if (kind === 'green') k = m === 'ship' ? 0.7 : 1;
+  else if (kind === 'pink') k = m === 'ship' ? 0.37 : m === 'ufo' ? 0.42 : m === 'ball' ? 0.77 : 0.72;
+  else if (kind === 'red') {
+    if (m === 'ship') k = p.mini ? 1.4 : 1;
+    else if (m === 'ufo') k = p.mini ? 1.36 : 1.02;
+    else if (m === 'ball' || m === 'spider') k = 1.34;
+    else if (m === 'robot') k = 1.28;
+    else k = 1.38;
+  } else if (m === 'robot') k = 0.9;                                // yellow
+  let v = jump * k * (p.mini ? 0.8 : 1);
+  if (m === 'ball' || m === 'spider') v *= 0.7; else if (m === 'swing') v *= 2;
+  return v;
+}
 // hitboxes: [width, height, offset x, offset y] in level units before scale and rotation
 const HIT_BLOCK = { 40: [30, 15, 0, -7.5] };
 const HIT_SPIKE = { 39: [6, 6, 0, -12], 103: [6, 6, 0, -12] };
@@ -2871,7 +2912,7 @@ function slopeBox(o) {
   return box;
 }
 function buildPlayWorld() {
-  const w = { solids: [], hazards: [], pads: [], orbs: [], slopes: [], gports: [], grid: new Map(), stamp: 0 };
+  const w = { solids: [], hazards: [], pads: [], orbs: [], slopes: [], gports: [], mports: [], grid: new Map(), stamp: 0 };
   const put = (list, box) => {
     list.push(box);
     for (let cx = Math.floor(box.l / 60); cx <= Math.floor(box.r / 60); cx++) {
@@ -2884,10 +2925,12 @@ function buildPlayWorld() {
     else if (o.cls === 'slope') { const b = slopeBox(o); if (b) put(w.slopes, b); }
     else if (o.cls === 'spike') { const h = HIT_SPIKE[o.id] || [6, 12, 0, -9]; put(w.hazards, objBox(o, h[0], h[1], h[2], h[3])); }
     else if (o.cls === 'padorb') {
-      if (PAD_BOOST[o.id]) put(w.pads, objBox(o, 30, 8, 0, -11));
-      else if (ORB_BOOST[o.id]) put(w.orbs, objBox(o, 36, 36, 0, 0));
+      if (PAD_KIND[o.id]) put(w.pads, objBox(o, 30, 8, 0, -11));
+      else if (ORB_KIND[o.id]) put(w.orbs, objBox(o, 36, 36, 0, 0));
     } else if (o.cls === 'portal' && (o.id === 10 || o.id === 11)) {
       const b = objBox(o, 34, 86, 0, 0); b.grav = o.id === 11 ? -1 : 1; put(w.gports, b);
+    } else if (o.cls === 'portal' && (MODE_PORTAL[o.id] || o.id === 99 || o.id === 101)) {
+      const b = objBox(o, 34, 86, 0, 0); b.mode = MODE_PORTAL[o.id] || null; b.mini = o.id === 101 ? 1 : o.id === 99 ? -1 : 0; b.py = o.y; put(w.mports, b);
     }
   }
   return w;
@@ -2896,43 +2939,137 @@ const overlaps = (r, b) => r.l < b.r && r.r > b.l && r.b < b.t && r.t > b.b;
 // boxes are stored in level space; the player works in a space mirrored by gravity
 const mir = (b, g) => (g > 0 ? b : { l: b.l, r: b.r, b: -b.t, t: -b.b, o: b.o });
 
-function playReset() {
+function startState() {                                            // the header's start mode (kA2), mini (kA3) and upside-down (kA11)
+  const hdr = (typeof level !== 'undefined' && level && level.header) || '';
+  const get = k => { const m = new RegExp('(?:^|,)' + k + ',([^,;]*)').exec(hdr); return m ? m[1] : ''; };
+  return { mode: MODE_BY_KA2[Number(get('kA2')) || 0] || 'cube', mini: get('kA3') === '1', flip: get('kA11') === '1' };
+}
+// a vehicle section is 10 blocks tall and centred on the portal that started it (an estimate); cube and robot have no ceiling
+function setSection(mode, py) {
   const p = play;
-  p.x = PLAYER.startX; p.g = 1; p.ym = PLAYER.half; p.lym = p.ym; p.yv = 0; p.onGround = true; p.boosted = false; p.rot = 0;
+  if (CEILING_MODES.has(mode)) { p.floorY = Math.max(0, Math.round((py - 150) / 30) * 30); p.ceilY = p.floorY + 300; }
+  else { p.floorY = 0; p.ceilY = null; }
+}
+function playReset() {
+  const p = play, s = startState();
+  p.mode = s.mode; p.mini = s.mini; p.g = 1; setSection(p.mode, 105);
+  p.x = PLAYER.startX; p.ym = playHalf() + p.floorY; p.lym = p.ym; p.yv = 0; p.onGround = true; p.boosted = false; p.rot = 0;
   p.dead = 0; p.touched = new Set(); p.orbUsed = new Set(); p.attempt++; p.done = 0; p.press = false;
-  p.isOnSlope = p.wasOnSlope = false; p.slopeVel = 0; p.slopeRot = 0;
+  p.isOnSlope = p.wasOnSlope = false; p.slopeVel = 0; p.slopeRot = 0; p.boostT = 9; p.robotUp = false; p.ballBuf = false;
+  if (s.flip && p.ceilY != null) { p.g = -1; p.ym = -(p.ceilY - playHalf()); p.lym = p.ym; }
+  p.camY = p.ceilY != null ? p.floorY + 150 : 85;
 }
 function hitGround() { play.onGround = true; play.boosted = false; play.yv = 0; }
-function boost(v) { const p = play; p.boosted = true; p.onGround = false; p.yv = v; }
+function boost(v) { const p = play; p.boosted = p.mode === 'cube'; p.onGround = false; p.robotUp = false; p.yv = v; }
 function playDie() { play.dead = 0.0001; }
-function flipGravity(g) {
+// flipping gravity keeps the player in the same place and world speed (the mirrored space is mirrored); the game also halves the speed
+function flipGravity(g, keep) {
   const p = play;
   if (p.g === g) return;
-  p.g = g; p.ym = -p.ym; p.lym = -p.lym; p.yv = -p.yv;               // same place and speed, mirrored space
+  p.g = g; p.ym = -p.ym; p.lym = -p.lym; p.yv = -p.yv * (keep === undefined ? 0.5 : keep);
   p.onGround = false; p.boosted = false; p.isOnSlope = p.wasOnSlope = false;
+}
+function setMode(mode, py) {
+  const p = play;
+  if (mode) { p.mode = mode; setSection(mode, py); p.boosted = false; p.robotUp = false; p.ballBuf = false; }
+}
+// is the player touching an orb it could still use? (a click then belongs to the orb, not to a flap or a ball flip)
+function orbOverlap() {
+  const p = play, w = p.world, H = playHalf();
+  const r = { l: p.x - H, r: p.x + H, b: p.ym - H, t: p.ym + H };
+  for (let cx = Math.floor((p.x - 40) / 60); cx <= Math.floor((p.x + 40) / 60); cx++) {
+    for (const e of (w.grid.get(cx) || [])) if (e.kind === w.orbs && !p.orbUsed.has(e.box) && overlaps(r, mir(e.box, p.g))) return true;
+  }
+  return false;
+}
+// the spider's click: jump to the nearest solid surface on the other side (or the ceiling) and flip gravity (estimate of PlayerObject::spiderTestJump)
+function spiderTeleport() {
+  const p = play, w = p.world, H = playHalf();
+  let best = p.ceilY != null ? (p.g > 0 ? p.ceilY : -p.floorY) : null;       // in the mirrored space the other side is above the player
+  if (p.g < 0 && p.ceilY == null) best = null;
+  for (let cx = Math.floor((p.x - H) / 60); cx <= Math.floor((p.x + H) / 60); cx++) {
+    for (const e of (w.grid.get(cx) || [])) {
+      if (e.kind !== w.solids) continue;
+      const b = mir(e.box, p.g);
+      if (b.r <= p.x - H + 1 || b.l >= p.x + H - 1 || b.b < p.ym + H) continue;
+      if (best === null || b.b < best) best = b.b;
+    }
+  }
+  if (best === null || best - (p.ym + H) < 2) return false;
+  p.ym = best - H; p.lym = p.ym;                                    // standing against the far surface (mirrored), then flip into it
+  flipGravity(-p.g, 0);
+  p.onGround = true; p.yv = 0;
+  return true;
 }
 
 function playStep(dtF, spd, ph) {                                  // dtF: time in 1/60 s frames (the game's physicsSecond)
-  const p = play;
+  const p = play, mode = p.mode;
+  const dtY = dtF * TIME_Y, dx = spd / 60 * dtF;                    // everything vertical runs on dt * 0.9
   p.lym = p.ym;
-  p.x += spd / 60 * dtF;
-  // jump and gravity (cube branch of the game's updateJump)
-  if (p.onGround && p.hold) {
-    p.onGround = false; p.boosted = true; p.yv = ph.ys;
-    if ((p.wasOnSlope || p.isOnSlope) && p.slopeVel > 0) {          // jumping off a ramp adds a share of the slope's speed
-      const cap = p.yv * 1.4;
-      p.yv = Math.min(p.yv + p.slopeVel * 0.25, cap);
+  p.x += dx;
+  const m = p.mini ? 0.85 : 1;                                      // the vehicles' mini divisor
+  const falling = () => p.yv < 2 * ph.g;                            // PlayerObject::isFalling-ish test: vy below twice the gravity
+  if (mode === 'ship' || mode === 'ufo') {
+    let k, c = mode === 'ufo' ? 0.5 : 0.4;
+    if (mode === 'ufo') {
+      if (p.press && !orbOverlap()) { p.press = false; const t = (p.mini ? 8 : 7) * m; if (p.yv < t) p.yv = t; }   // a flap sets the speed to 7
+      k = falling() ? 0.8 : 1.2;
+    } else if (p.hold) { k = -1; if (falling()) c = 0.5; }
+    else k = falling() ? 0.8 : 1.2;
+    p.yv -= dtY * VEH_G * k * c / m;
+    p.yv = Math.min(Math.max(p.yv, -6.4 / m), 8 / m);
+    p.onGround = false;
+  } else if (mode === 'swing') {
+    if (p.press && !orbOverlap()) { p.press = false; flipGravity(-p.g, 0.8); }
+    p.yv -= dtY * VEH_G * (p.mini ? 0.6 : 0.4);
+    p.yv = Math.min(Math.max(p.yv, -8), 8);
+    p.onGround = false;
+  } else if (mode === 'wave') {
+    const dir = p.hold ? 1 : -1;                                    // 45 degrees up while held, 45 down otherwise (63 when mini)
+    p.yv = dir * (spd / 60) * (p.mini ? 2 : 1) / TIME_Y;
+    p.onGround = false;
+  } else if (mode === 'ball' || mode === 'spider') {
+    if (p.press && !orbOverlap()) p.ballBuf = true;
+    if (!p.hold) p.ballBuf = false;
+    if (p.ballBuf && p.onGround) {
+      p.ballBuf = false;
+      if (mode === 'ball') flipGravity(-p.g, 0.3);                  // the flip halves the speed and the ball then keeps 0.6 of it
+      else if (!spiderTeleport()) { /* nothing to jump to */ }
     }
-  } else if (p.boosted) {
-    p.yv -= ph.g * dtF;
-    if (p.yv < 0) p.boosted = false;
-  } else {
+    p.yv = Math.max(p.yv - dtY * VEH_G * 0.6, -PLAYER.maxFall);
     if (p.yv < 0) p.onGround = false;
-    p.yv = Math.max(p.yv - ph.g * dtF, -PLAYER.maxFall);
+  } else if (mode === 'robot') {
+    const jump = ph.ys * 0.5 * (p.mini ? 0.8 : 1);
+    if (p.onGround && p.hold) { p.onGround = false; p.yv = jump; p.boostT = 0; p.robotUp = true; }
+    if (p.robotUp && p.hold && p.boostT < 1.5) { p.boostT += dtY * 0.1; p.yv += dtY * ph.g * 0.9; }   // held: gravity is cancelled for 15 steps
+    else p.robotUp = false;
+    p.yv = Math.max(p.yv - dtY * ph.g * 0.9, -PLAYER.maxFall);
+    if (p.yv < 0) p.onGround = false;
+  } else {
+    // cube: the cube branch of the game's updateJump
+    if (p.onGround && p.hold) {
+      p.onGround = false; p.boosted = true; p.yv = ph.ys * (p.mini ? 0.8 : 1);
+      if ((p.wasOnSlope || p.isOnSlope) && p.slopeVel > 0) {          // jumping off a ramp adds a share of the slope's speed
+        const cap = p.yv * 1.4;
+        p.yv = Math.min(p.yv + p.slopeVel * 0.25, cap);
+      }
+    } else if (p.boosted) {
+      p.yv -= ph.g * dtY;
+      if (p.yv < 0) p.boosted = false;
+    } else {
+      if (p.yv < 0) p.onGround = false;
+      p.yv = Math.max(p.yv - ph.g * dtY, -PLAYER.maxFall);
+    }
   }
-  p.ym += p.yv * dtF;
-  // rotation: spin in the air, settle to the nearest quarter turn (or the slope's angle) on the ground
-  if (!p.onGround) p.rot += 7.5 * dtF;
+  p.ym += p.yv * dtY;
+  // rotation
+  const ang = Math.atan2(p.yv * TIME_Y, spd / 60) * 180 / Math.PI;
+  if (mode === 'ship' || mode === 'swing') p.rot += (-Math.max(-70, Math.min(70, ang)) - p.rot) * Math.min(1, dtF * 0.25);
+  else if (mode === 'ufo') p.rot += (-Math.max(-60, Math.min(60, ang)) * 0.35 - p.rot) * Math.min(1, dtF * 0.2);
+  else if (mode === 'wave') p.rot = -(p.hold ? 1 : -1) * (p.mini ? 63.4 : 45);
+  else if (mode === 'ball') p.rot += dx / playHalf() * 180 / Math.PI;
+  else if (mode === 'robot' || mode === 'spider') p.rot += (0 - p.rot) * Math.min(1, dtF * 0.5);
+  else if (!p.onGround) p.rot += 7.5 * dtF;                         // cube: spin in the air, settle to the nearest quarter turn (or the slope's angle) on the ground
   else {
     const target = p.isOnSlope ? p.slopeRot * 180 / Math.PI : Math.round(p.rot / 90) * 90;
     p.rot += (target - p.rot) * Math.min(1, dtF * 0.4725);
@@ -2946,7 +3083,7 @@ function lineY(s, x, rising) {
   const d = s.l - x; return !rising ? s.t + d * ratio : s.b - d * ratio;
 }
 function slopeCollide(s0, speed, g, rect) {
-  const p = play, H = PLAYER.half, s = mir(s0, g);
+  const p = play, H = playHalf(), s = mir(s0, g);
   s.w = s0.w; s.h = s0.h; s.angle = s0.angle;
   const rising = g > 0 ? s0.rising : !s0.rising;                    // mirroring flips which way it climbs
   const floorTop = g > 0 ? s0.floorTop : !s0.floorTop;
@@ -2987,43 +3124,103 @@ function slopeCollide(s0, speed, g, rect) {
   if (p.ym - 2 <= newY) { p.ym = newY; p.yv = Math.min(p.yv, -2); p.onGround = false; p.boosted = false; return false; }
   playDie(); return true;
 }
+// the vehicles and the ball do not do the cube's slope ride: they are pushed along the surface instead (a simpler stand-in)
+function vehicleSlope(s0, g) {
+  const p = play, H = playHalf(), s = mir(s0, g);
+  s.w = s0.w; s.h = s0.h; s.angle = s0.angle;
+  const rising = g > 0 ? s0.rising : !s0.rising;
+  const floorTop = g > 0 ? s0.floorTop : !s0.floorTop;
+  if (p.x < s.l - H * 0.5 || p.x > s.r + H * 0.5) return false;
+  const sy = lineY(s, Math.min(Math.max(p.x, s.l), s.r), rising);
+  const rad = H / Math.cos(s.angle);
+  if (!floorTop) {
+    const newY = Math.min(sy + rad, s.t + H);
+    if (p.ym < newY && p.ym + H > s.b) {
+      if (newY - p.ym > H + 2) { playDie(); return true; }          // ran into the tall side
+      p.ym = newY; p.isOnSlope = true;
+      if (p.yv < 0) hitGround();
+    }
+  } else {
+    const newY = Math.max(sy - rad, s.b - H);
+    if (p.ym > newY && p.ym - H < s.t) {
+      if (p.ym - newY > H + 2) { playDie(); return true; }
+      p.ym = newY; if (p.yv > 0) p.yv = 0;
+    }
+  }
+  return false;
+}
 function playCollide(speed) {
-  const p = play, w = p.world, H = PLAYER.half, g = p.g;
+  const p = play, w = p.world, H = playHalf(), SM = playSmall() * (p.mode === 'wave' ? 0.6 : 1), g = p.g, mode = p.mode;
+  const cubeLike = mode === 'cube' || mode === 'robot';
   p.wasOnSlope = p.isOnSlope; p.isOnSlope = false;
-  if (g > 0 && p.ym - H <= 0) { p.ym = H; hitGround(); }          // the ground only exists below
-  if (p.ym > 2500 || p.ym < -400) { playDie(); return; }
+  // floor and ceiling of the section, in the mirrored space (the world's floor is the mirrored ceiling when upside down)
+  const fl = g > 0 ? p.floorY : (p.ceilY != null ? -p.ceilY : null);
+  const ce = g > 0 ? p.ceilY : -p.floorY;
+  if (fl !== null && p.ym - H <= fl && p.yv <= 0) { p.ym = fl + H; hitGround(); }
+  if (ce !== null && p.ym + H >= ce) { p.ym = ce - H; if (p.yv > 0) p.yv = 0; p.boosted = false; }
+  if (p.ym > 2500 || p.ym < -2500) { playDie(); return; }
   const rect = { l: p.x - H, r: p.x + H, b: p.ym - H, t: p.ym + H };
-  const small = { l: p.x - PLAYER.small, r: p.x + PLAYER.small, b: p.ym - PLAYER.small, t: p.ym + PLAYER.small };
   const stamp = ++w.stamp, near = [];
   for (let cx = Math.floor((p.x - 40) / 60); cx <= Math.floor((p.x + 40) / 60); cx++) {
     for (const e of (w.grid.get(cx) || [])) { if (e.box.st !== stamp) { e.box.st = stamp; near.push(e); } }
   }
   // slopes first, then everything else
-  for (const e of near) if (e.kind === w.slopes) { if (slopeCollide(e.box, speed / 60, g, rect)) return; }
+  for (const e of near) if (e.kind === w.slopes) { if (cubeLike ? slopeCollide(e.box, speed / 60, g, rect) : vehicleSlope(e.box, g)) return; }
   // leaving the top of a ramp launches the cube along it (an estimate: the physics repo has the entry, jump and landing but not the exit)
-  if (p.wasOnSlope && !p.isOnSlope && p.slopeVel > 0 && p.onGround) { p.yv = p.slopeVel; p.boosted = true; p.onGround = false; p.slopeVel = 0; }
+  if (cubeLike && p.wasOnSlope && !p.isOnSlope && p.slopeVel > 0 && p.onGround) { p.yv = p.slopeVel; p.boosted = mode === 'cube'; p.onGround = false; p.slopeVel = 0; }
   const rect2 = { l: p.x - H, r: p.x + H, b: p.ym - H, t: p.ym + H };
-  const small2 = { l: p.x - PLAYER.small, r: p.x + PLAYER.small, b: p.ym - PLAYER.small, t: p.ym + PLAYER.small };
+  const small2 = { l: p.x - SM, r: p.x + SM, b: p.ym - SM, t: p.ym + SM };
   for (const e of near) {
     const b = mir(e.box, g);
     if (e.kind === w.solids) {
       if (!overlaps(rect2, b)) continue;
-      const dy = p.ym - p.lym, bottom = p.ym - H, maxSnap = bottom + PLAYER.snap, floatG = maxSnap - dy;
-      let hit = false;
-      if (maxSnap < b.t && floatG < b.t) hit = true;               // too far into it (side or underside): a crash
-      else if (p.yv > 0) hit = false;                              // rising past the top edge: no collision
-      else { p.ym = b.t + H; hitGround(); }                        // falling onto it: land
-      if (hit && overlaps(small2, b)) { playDie(); return; }
+      const dy = p.ym - p.lym;
+      if (cubeLike) {
+        const bottom = p.ym - H, maxSnap = bottom + PLAYER.snap, floatG = maxSnap - dy;
+        let hit = false;
+        if (maxSnap < b.t && floatG < b.t) hit = true;               // too far into it (side or underside): a crash
+        else if (p.yv > 0) hit = false;                              // rising past the top edge: no collision
+        else { p.ym = b.t + H; hitGround(); }                        // falling onto it: land
+        if (hit && overlaps(small2, b)) { playDie(); return; }
+      } else {
+        // vehicles slide along the top and the underside of blocks and crash into their sides
+        const snap = PLAYER.snap + Math.abs(dy);
+        const above = p.ym > (b.t + b.b) / 2;
+        if (above && b.t - (p.ym - H) <= snap) { p.ym = b.t + H; if (p.yv <= 0) hitGround(); }
+        else if (!above && (p.ym + H) - b.b <= snap) { p.ym = b.b - H; if (p.yv > 0) p.yv = 0; }
+        else if (overlaps(small2, b)) { playDie(); return; }
+      }
     } else if (e.kind === w.hazards) {
       if (overlaps(small2, b)) { playDie(); return; }
     } else if (e.kind === w.pads) {
-      if (overlaps(rect2, b)) { if (!p.touched.has(e.box)) { p.touched.add(e.box); boost(PAD_BOOST[e.box.o.id]); } } else p.touched.delete(e.box);
+      if (overlaps(rect2, b)) {
+        if (!p.touched.has(e.box)) {
+          p.touched.add(e.box);
+          const kind = PAD_KIND[e.box.o.id];
+          if (kind === 'blue') flipGravity(-p.g);
+          if (mode !== 'wave') boost(padLaunch(kind));
+        }
+      } else p.touched.delete(e.box);
     } else if (e.kind === w.orbs) {
       if (overlaps(rect2, b)) {
-        if (p.press && !p.orbUsed.has(e.box)) { p.orbUsed.add(e.box); p.press = false; boost(ORB_BOOST[e.box.o.id]); }
+        if (p.press && !p.orbUsed.has(e.box)) {
+          p.orbUsed.add(e.box); p.press = false;
+          const kind = ORB_KIND[e.box.o.id], jump = physFor(speed).ys;
+          if (kind === 'green') { flipGravity(-p.g); if (mode !== 'wave') boost(orbLaunch(kind, jump)); }
+          else if (kind === 'blue') { if (mode !== 'wave') boost(orbLaunch(kind, jump)); flipGravity(-p.g); }
+          else if (mode !== 'wave') boost(orbLaunch(kind, jump));
+        }
       }
     } else if (e.kind === w.gports) {
       if (overlaps(rect2, b)) { if (!p.touched.has(e.box)) { p.touched.add(e.box); flipGravity(e.box.grav); } } else p.touched.delete(e.box);
+    } else if (e.kind === w.mports) {
+      if (overlaps(rect2, b)) {
+        if (!p.touched.has(e.box)) {
+          p.touched.add(e.box);
+          if (e.box.mode) setMode(e.box.mode, e.box.py);
+          if (e.box.mini) p.mini = e.box.mini > 0;
+        }
+      } else p.touched.delete(e.box);
     }
   }
   if (!p.hold) p.orbUsed.clear();
@@ -3047,13 +3244,22 @@ function playUpdate(delta) {
   const W = canvas._w / view.zoom;
   view.cx = p.x + W * 0.2;
   const y = p.g * p.ym;
-  const target = Math.max(85, y - 40);
+  const target = p.ceilY != null ? p.floorY + 150 : Math.max(85, y - 40);   // a vehicle section is framed whole
   p.camY += (target - p.camY) * Math.min(1, delta * 8);
   view.cy = p.camY;
 }
 
 // ---- drawing the cube (the real icon when it can be loaded, else a plain square) ----
-const PLAYER_FRAMES = ['player_01_001.png', 'player_01_2_001.png', 'player_01_extra_001.png'];
+// the icon atlases of each vehicle; the frames are drawn in this order with the player's colours (green, cyan, white)
+const ICON_SETS = {
+  cube: { atlas: 'player_01', parts: [['player_01_001.png', '7dff00'], ['player_01_2_001.png', '00ffff'], ['player_01_extra_001.png', 'ffffff']] },
+  ship: { atlas: 'ship_01', parts: [['ship_01_001.png', '7dff00'], ['ship_01_2_001.png', '00ffff']], rider: 0.55, riderY: 9 },
+  ufo: { atlas: 'bird_01', parts: [['bird_01_001.png', '7dff00'], ['bird_01_2_001.png', '00ffff'], ['bird_01_3_001.png', 'ffffff']], rider: 0.5, riderY: 8 },
+  ball: { atlas: 'player_ball_01', parts: [['player_ball_01_001.png', '7dff00'], ['player_ball_01_2_001.png', '00ffff']] },
+  wave: { atlas: 'dart_01', parts: [['dart_01_001.png', '7dff00'], ['dart_01_2_001.png', '00ffff']] },
+  swing: { atlas: 'swing_01', parts: [['swing_01_001.png', '7dff00'], ['swing_01_2_001.png', '00ffff'], ['swing_01_extra_001.png', 'ffffff']] }
+};
+const PLAYER_FRAMES = ICON_SETS.cube.parts.map(x => x[0]);
 async function fetchIconFile(name) {
   const hit = await fetchAnyFile([name]);
   if (hit) return hit;
@@ -3065,47 +3271,80 @@ async function fetchIconFile(name) {
   } catch (e) { /* no icons folder */ }
   return null;
 }
-async function loadPlayerIcon() {
-  if (play.icon) return;
-  play.icon = { ready: false };
+async function loadIconSet(key) {
+  const set = ICON_SETS[key];
+  if (!set || set.state) return;
+  set.state = 'loading';
   for (const q of (assetQuality === 'uhd' ? ['uhd', 'hd', ''] : ['hd', 'uhd', ''])) {
     const sfx = q ? '-' + q : '';
-    const plist = await fetchIconFile(`player_01${sfx}.plist`), png = plist && await fetchIconFile(`player_01${sfx}.png`);
+    const plist = await fetchIconFile(`${set.atlas}${sfx}.plist`), png = plist && await fetchIconFile(`${set.atlas}${sfx}.png`);
     if (!plist || !png) continue;
     const sheet = { file: png, bitmap: null, loading: false, Q: q === 'uhd' ? 4 : q === 'hd' ? 2 : 1 };
-    if (parseAtlasPlist(await plist.text(), sheet, new Set(PLAYER_FRAMES)) > 0) { play.icon.ready = true; break; }
+    if (parseAtlasPlist(await plist.text(), sheet, new Set(set.parts.map(x => x[0]))) > 0) { set.state = 'ready'; break; }
   }
+  if (set.state !== 'ready') set.state = 'missing';
   draw();
+}
+function loadPlayerIcon() { for (const k of Object.keys(ICON_SETS)) loadIconSet(k); }
+// one icon set at the current scale; returns whether anything was drawn
+function drawIconSet(set, k, scale, dy) {
+  let drawn = false;
+  set.parts.forEach(([name, col]) => {
+    const fi = atlas.frames.get(name), img = fi && tintedFrame(fi, col);
+    if (!img) return;
+    const Q = fi.sheet.Q, W = fi.w / Q, Hh = fi.h / Q;
+    ctx.save();
+    ctx.scale(k * scale, k * scale);
+    ctx.translate(fi.ox / Q, -fi.oy / Q - dy);
+    if (fi.rotated) ctx.rotate(-Math.PI / 2);
+    const dw = fi.rotated ? Hh : W, dh = fi.rotated ? W : Hh;
+    ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+    ctx.restore();
+    drawn = true;
+  });
+  return drawn;
+}
+// a vehicle section's floor and ceiling (the ground picture only knows the floor at 0)
+function drawSection() {
+  const p = play;
+  if (!(p.floorY > 0 || p.ceilY != null)) return;
+  const k = view.zoom, W = canvas._w;
+  ctx.save();
+  ctx.fillStyle = 'rgba(8,14,40,.92)'; ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(2, 3 * k);
+  if (p.floorY > 0) {
+    const y = toScreen(0, p.floorY)[1];
+    ctx.fillRect(0, y, W, canvas._h - y + 4); ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  if (p.ceilY != null) {
+    const y = toScreen(0, p.ceilY)[1];
+    ctx.fillRect(0, -4, W, y + 4); ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  ctx.restore();
 }
 function drawPlayer() {
   if (!play.active || !level) return;
+  drawSection();
   const [sx, sy] = toScreen(play.x, play.g * play.ym);
-  const k = view.zoom;
+  const k = view.zoom, mode = play.mode, mini = play.mini ? 0.6 : 1;
   ctx.save();
   ctx.translate(sx, sy);
   ctx.scale(1, play.g);                                             // upside down when gravity is flipped
   ctx.rotate(play.rot * Math.PI / 180);
   ctx.globalAlpha = play.dead ? Math.max(0, 1 - play.dead * 3) : 1;
+  const set = ICON_SETS[mode] || ICON_SETS.cube;
   let drawn = false;
-  if (play.icon && play.icon.ready) {
-    const cols = ['7dff00', '00ffff', 'ffffff'];
-    PLAYER_FRAMES.forEach((name, i) => {
-      const fi = atlas.frames.get(name), img = fi && tintedFrame(fi, cols[i]);
-      if (!img) return;
-      const Q = fi.sheet.Q, W = fi.w / Q, Hh = fi.h / Q;
-      ctx.save();
-      ctx.scale(k, k);
-      ctx.translate(fi.ox / Q, -fi.oy / Q);
-      if (fi.rotated) ctx.rotate(-Math.PI / 2);
-      const dw = fi.rotated ? Hh : W, dh = fi.rotated ? W : Hh;
-      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
-      ctx.restore();
-      drawn = true;
-    });
-  }
+  if (set.rider && ICON_SETS.cube.state === 'ready') drawIconSet(ICON_SETS.cube, k, set.rider * mini, set.riderY * mini / set.rider);
+  if (set.state === 'ready' || (set === ICON_SETS.cube && set.state === 'ready')) drawn = drawIconSet(set, k, mini, 0);
   if (!drawn) {
-    ctx.fillStyle = '#7dff00'; ctx.fillRect(-15 * k, -15 * k, 30 * k, 30 * k);
-    ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(1, 2 * k); ctx.strokeRect(-15 * k, -15 * k, 30 * k, 30 * k);
+    const h = playHalf();
+    ctx.fillStyle = '#7dff00'; ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(1, 2 * k);
+    ctx.beginPath();
+    if (mode === 'ball') ctx.arc(0, 0, h * k, 0, 7);
+    else if (mode === 'wave') { ctx.moveTo(-h * k, h * k * 0.7); ctx.lineTo(h * 1.2 * k, 0); ctx.lineTo(-h * k, -h * k * 0.7); ctx.closePath(); }
+    else if (mode === 'ship' || mode === 'swing') { ctx.moveTo(-h * k * 1.2, h * k * 0.6); ctx.lineTo(h * 1.2 * k, 0); ctx.lineTo(-h * 1.2 * k, -h * k * 0.6); ctx.closePath(); }
+    else if (mode === 'ufo') ctx.ellipse(0, 0, h * k * 1.1, h * k * 0.7, 0, 0, 7);
+    else ctx.rect(-h * k, -h * k, 2 * h * k, 2 * h * k);
+    ctx.fill(); ctx.stroke();
   }
   ctx.restore();
 }
@@ -3124,7 +3363,7 @@ function hudUpdate() {
   const h = $('plHud');
   if (!h) return;
   const pct = Math.min(100, Math.floor(Math.max(0, play.x) / timelineModel().maxX * 100));
-  h.textContent = `Attempt ${play.attempt}  ·  ${pct}%  ·  best ${play.best}%` + (play.done ? '  ·  level complete!' : '');
+  h.textContent = `Attempt ${play.attempt}  ·  ${pct}%  ·  best ${play.best}%  ·  ${play.mode}${play.mini ? " (mini)" : ""}` + (play.done ? '  ·  level complete!' : '');
 }
 async function startPlay() {
   if (!level || play.active) return;
