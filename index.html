@@ -3079,7 +3079,7 @@ function drawChildren(o, sx, sy, dim, phase) {
     paintSprite(img, fi, oc, px, py, dim);
   }
 }
-function defaultColFor(o) { const c = CDEF[o.id]; if (c && c[1]) return c[1]; return /^black/i.test(ID_FRAMES[o.id] || '') ? 1010 : 0; }
+function defaultColFor(o) { const c = CDEF[o.id]; if (c && c[1]) return c[1]; if (/^plank_01_square/.test(ID_FRAMES[o.id] || '') && blackNamed(o)) return 1010; return /^black/i.test(ID_FRAMES[o.id] || '') ? 1010 : 0; }
 // ---- sprites stored as one quarter: the sprite offset points at a corner of the object, so the full shape is that quarter mirrored ----
 function isQuarterFrame(fi) {
   return Math.abs(Math.abs(fi.ox) * 2 - fi.w) < 8 && Math.abs(Math.abs(fi.oy) * 2 - fi.h) < 8 && fi.w > 40 && fi.h > 40;
@@ -3112,7 +3112,7 @@ function blackNamed(o) { return OBJ_NAMES[o.id] && /\bblack\b/i.test(OBJ_NAMES[o
 function defaultChildFor(o) { const c = CDEF[o.id]; if (c && c[0]) return c[0]; return blackNamed(o) ? 1010 : defaultMainFor(o); }
 function defaultMainFor(o) {
   const c = CDEF[o.id]; if (c && c[0]) return c[0];
-  if (/^blockOutline/.test(ID_FRAMES[o.id] || '')) return 0;
+  if (/^(blockOutline|plank_01_square)/.test(ID_FRAMES[o.id] || '')) return 0;      // the outline / edge-line sprite is white; the black part is the colour sprite
   if (OBJ_NAMES[o.id] && /\bblack\b/i.test(OBJ_NAMES[o.id]) && !/colou?red|pulsing|glow/i.test(OBJ_NAMES[o.id])) return 1010;
   const n = ID_FRAMES[o.id] || '';
   if (/^lighttriangle_01_/.test(n)) return 1010;                    // the plain Black Slope
