@@ -3379,6 +3379,7 @@ function hudUpdate() {
   const h = $('plHud');
   if (!h) return;
   const pct = Math.min(100, Math.floor(Math.max(0, play.x) / timelineModel().maxX * 100));
+  h.style.top = (window.shellApi ? shellApi.S.k * 175 : 70) + 'px';   // below the editor's top bar
   h.textContent = `Attempt ${play.attempt}  ·  ${pct}%  ·  best ${play.best}%  ·  ${play.mode}${play.mini ? " (mini)" : ""}` + (play.done ? '  ·  level complete!' : '');
 }
 async function startPlay() {
