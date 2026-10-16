@@ -717,6 +717,7 @@ function draw() {
     if (c) bg = `rgb(${Math.round(c.r)},${Math.round(c.g)},${Math.round(c.b)})`;
   }
   ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+  if (opt.bg) drawBgPicture(W, H);
 
   // grid: 30 units per block, only when blocks are big enough to read
   const cell = 30 * view.zoom;
@@ -2096,6 +2097,79 @@ function syncTimeline(force) {
 }
 const _drawTl = draw;
 draw = function () { _drawTl(); try { syncTimeline(false); } catch (e) { /* the bar is cosmetic */ } };
+</script>
+
+<script>
+"use strict";
+// ================= level background picture: game_bg_XX_001 chosen by the level's kA6 =================
+// Read from the chosen game folder (or loaded files), else from the copies hosted next to the page.
+// Like the game it is tiled sideways, scrolls slowly, and is tinted by the background colour channel.
+const bgPic = { id: 0, img: null, loading: 0, want: 0, tint: null, tintKey: '' };
+function levelBgId() {
+  const m = level && /(?:^|,)kA6,(\d+)/.exec(level.header || '');
+  const n = m ? Number(m[1]) : 1;
+  return n >= 1 && n <= 59 ? n : 1;
+}
+async function fetchBgBlob(id) {
+  const nn = String(id).padStart(2, '0');
+  const names = (assetQuality === 'uhd' ? ['-uhd', '-hd', ''] : ['-hd', '-uhd', '']).map(q => `game_bg_${nn}_001${q}.png`);
+  if (typeof folderHandle !== 'undefined' && folderHandle) {
+    try {
+      if ((await folderHandle.queryPermission({ mode: 'read' })) === 'granted') {
+        for (const n of names) {
+          try { return await (await folderHandle.getFileHandle(n)).getFile(); } catch (e) { /* try the next size */ }
+        }
+      }
+    } catch (e) { /* fall through to hosted copy */ }
+  }
+  if (typeof lastAssetFiles !== 'undefined' && lastAssetFiles) {
+    for (const n of names) { const f = lastAssetFiles.find(x => x.name === n); if (f) return f; }
+  }
+  for (const n of names) {
+    try { const r = await fetch('assets/' + n); if (r.ok) return await r.blob(); } catch (e) { /* offline or not hosted */ }
+  }
+  return null;
+}
+function ensureBgPic() {
+  const id = levelBgId();
+  if (bgPic.id === id && bgPic.img) return;
+  if (bgPic.loading === id) return;
+  bgPic.loading = id;
+  fetchBgBlob(id).then(async blob => {
+    if (!blob) { bgPic.loading = 0; bgPic.id = id; bgPic.img = null; return; }
+    const bmp = await createImageBitmap(blob);
+    bgPic.img = bmp; bgPic.id = id; bgPic.loading = 0; bgPic.tintKey = '';
+    draw();
+  }).catch(() => { bgPic.loading = 0; bgPic.id = id; });
+}
+function tintedBg(c) {
+  const key = bgPic.id + '|' + Math.round(c.r / 4) + '|' + Math.round(c.g / 4) + '|' + Math.round(c.b / 4) + '|' + assetQuality;
+  if (bgPic.tint && bgPic.tintKey === key) return bgPic.tint;
+  const S = 512, cv = bgPic.tint || document.createElement('canvas');
+  cv.width = cv.height = S;
+  const g = cv.getContext('2d');
+  g.clearRect(0, 0, S, S);
+  g.drawImage(bgPic.img, 0, 0, S, S);
+  g.globalCompositeOperation = 'multiply';
+  g.fillStyle = `rgb(${Math.round(c.r)},${Math.round(c.g)},${Math.round(c.b)})`;
+  g.fillRect(0, 0, S, S);
+  g.globalCompositeOperation = 'destination-in';
+  g.drawImage(bgPic.img, 0, 0, S, S);
+  g.globalCompositeOperation = 'source-over';
+  bgPic.tint = cv; bgPic.tintKey = key;
+  return cv;
+}
+function drawBgPicture(W, H) {
+  if (!level) return;
+  ensureBgPic();
+  if (!bgPic.img) return;
+  const c = chan(1000) || { r: 255, g: 255, b: 255 };
+  const cv = tintedBg(c);
+  const size = Math.max(H, 256);
+  let x0 = -((view.cx * 0.1 * (view.zoom || 1)) % size);
+  if (x0 > 0) x0 -= size;
+  for (let x = x0; x < W; x += size) ctx.drawImage(cv, Math.round(x), 0, size + 1, size);
+}
 </script>
 <script>
 "use strict";
