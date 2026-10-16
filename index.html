@@ -4963,19 +4963,65 @@ function goptOverlay() {
     const k = hdrGet('kA16');
     const sid = Number(meta && meta.k45 || 0), track = Number(meta && meta.k8 || 0);
     const custom = sid > 0;
-    const norm = nbtn(root, custom ? 'GJ_button_04' : 'GJ_button_01', null, P(892, 537, 190, 62), () => { }, 'Normal', 'gold', 36);
-    const cust = nbtn(root, custom ? 'GJ_button_01' : 'GJ_button_04', null, P(1100, 537, 190, 62), () => { }, 'Custom', 'gold', 36);
+    const norm = nbtn(root, custom ? 'GJ_button_04' : 'GJ_button_01', null, P(892, 537, 190, 62), () => { if (custom) { metaSet('k45', 'i', 0); open(settingsDialog); } }, 'Normal', 'gold', 36);
+    const cust = nbtn(root, custom ? 'GJ_button_01' : 'GJ_button_04', null, P(1100, 537, 190, 62), () => { if (!custom) openOver(songIdDialog); }, 'Custom', 'gold', 36);
     const box = nine(root, 'GJ_square01', '6e3d26', P(759, 730, 1008, 300), 28, 40);
     if (!custom) {
       const name = LEVEL_NAMES[track] || 'Unknown';
       txt(root, 'big', String(track + 1).padStart(2, '0') + ': ' + name, 58, P(759, 735, 700, 80));
-      frame(root, 'GJ_arrow_01_001.png', P(365, 745, 64, 78));
-      frame(root, 'GJ_arrow_01_001.png', P(1175, 745, 64, 78), 'transform:scaleX(-1)');
+      const step = d => () => { metaSet('k8', 'i', (track + d + LEVEL_NAMES.length) % LEVEL_NAMES.length); open(settingsDialog); };
+      const lb = mk('button', 'a press', root); put(lb, P(365, 745, 64, 78)); frame(lb, 'GJ_arrow_01_001.png', { cx: 0, cy: 0, w: 64, h: 78 }, 'left:0;top:0;width:100%;height:100%'); lb.onclick = step(-1);
+      const rb = mk('button', 'a press', root); put(rb, P(1175, 745, 64, 78)); frame(rb, 'GJ_arrow_01_001.png', { cx: 0, cy: 0, w: 64, h: 78 }, 'left:0;top:0;width:100%;height:100%;transform:scaleX(-1)'); rb.onclick = step(1);
     } else {
-      const sb = (typeof songInfoText === 'function') ? songInfoText() : '';
       txt(root, 'big', 'Song ' + sid, 54, P(759, 690, 700, 70));
-      nbtn(root, 'GJ_button_04', null, P(758, 790, 520, 95), () => { close(); $('menu').classList.add('on'); }, 'Select Custom Song', 'big', 44);
+      nbtn(root, 'GJ_button_04', null, P(758, 790, 520, 95), () => openOver(songIdDialog), 'Change Song ID', 'big', 44);
     }
+  }
+  // the level file's own settings outside the level string: name (k2), description (k3, base64), song (k45) and normal track (k8)
+  function metaSet(key, tag, value) {
+    meta[key] = String(value);
+    if (typeof srcDoc !== 'undefined' && srcDoc && srcDoc.xml) {
+      const re = new RegExp('(<k>' + key + '</k><)[a-z]+(>)[^<]*(</)[a-z]+(>)');
+      const esc = String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+      if (re.test(srcDoc.xml)) srcDoc.xml = srcDoc.xml.replace(re, (m, a, b, c, d) => a + tag + b + esc + c + tag + d);
+      else {                                                         // the key is new: add it at the end of the level's dictionary
+        const i = srcDoc.xml.search(/<\/dict>\s*<\/plist>/), pos = i >= 0 ? i : srcDoc.xml.lastIndexOf('</dict>');
+        if (pos >= 0) srcDoc.xml = srcDoc.xml.slice(0, pos) + '<k>' + key + '</k><' + tag + '>' + esc + '</' + tag + '>' + srcDoc.xml.slice(pos);
+      }
+    }
+    level.edited = true;
+    if (typeof updateEditUi === 'function') try { updateEditUi(); } catch (e) { /* the save button only */ }
+  }
+  const b64u = s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g, '-').replace(/\//g, '_');
+  const unb64u = s => { try { const b = s.replace(/-/g, '+').replace(/_/g, '/'); return decodeURIComponent(escape(atob(b + '='.repeat((4 - b.length % 4) % 4)))); } catch (e) { return ''; } };
+  // an <input> / <textarea> that sits in the dialog like the game's text fields
+  function field(tag, o, value, max, onInput) {
+    const e = mk(tag, 'a', root); put(e, o);
+    e.value = value; e.maxLength = max;
+    e.style.cssText += ';box-sizing:border-box;background:#1b0f08;color:#fff;border:calc(4*var(--k)) solid #000;border-radius:calc(10*var(--k));padding:0 calc(14*var(--k));font:inherit;font-size:calc(40*var(--k));user-select:text;-webkit-user-select:text;outline:none;resize:none;pointer-events:auto';
+    if (tag === 'textarea') e.style.cssText += ';padding:calc(10*var(--k)) calc(14*var(--k));line-height:1.25;font-size:calc(34*var(--k))';
+    e.addEventListener('input', () => onInput(e.value));
+    e.addEventListener('keydown', ev => { if (ev.key !== 'Escape') ev.stopPropagation(); });
+    return e;
+  }
+  function levelInfoDialog() {
+    const o = smallDialog(1200, 760, 'Level Info', 80);
+    txt(root, 'gold', 'Name:', 50, o(160, 200, 240, 70), 'left');
+    field('input', o(740, 200, 800, 80), meta.k2 || '', 20, v => { metaSet('k2', 's', v); document.title = (v || 'Level') + ' - Level Viewer'; });
+    txt(root, 'gold', 'Description:', 50, o(250, 310, 440, 70), 'left');
+    field('textarea', o(600, 480, 1040, 230), unb64u(meta.k3 || ''), 140, v => metaSet('k3', 's', b64u(v)));
+    nbtn(root, 'GJ_button_01', null, o(600, 690, 190, 90), back, 'OK', 'gold', 60);
+  }
+  function songIdDialog() {
+    const o = smallDialog(1000, 420, 'Custom Song', 80);
+    txt(root, 'gold', 'Song ID:', 50, o(250, 210, 360, 70), 'left');
+    const f = field('input', o(700, 210, 520, 80), Number(meta.k45 || 0) || '', 9, () => { });
+    f.inputMode = 'numeric';
+    nbtn(root, 'GJ_button_01', null, o(500, 330, 190, 90), () => {
+      const id = Math.max(0, Math.floor(Number(f.value) || 0));
+      metaSet('k45', 'i', id); if (id && typeof loadSong === 'function') try { loadSong(id); } catch (e) { /* the song loads from the Songs menu otherwise */ }
+      back();
+    }, 'OK', 'gold', 60);
   }
   function settingsDialog() {
     const panel = nine(root, 'GJ_square01', null, P(757, 506, 1515, 1013), 28, 46);
@@ -4997,12 +5043,15 @@ function goptOverlay() {
     const COLS = [['BG', 1000, 292, 353], ['G', 1001, 447, 498], ['G2', 1009, 602, 662], ['Line', 1002, 757, 827], ['MG', 1013, 912, 975], ['MG2', 1014, 1067, 1137]];
     for (const [t, ch, x, px] of COLS) {
       txt(root, 'big', t + ':', 38, P(x - 12, 125, 150, 50), 'center');
-      const plus = mk('div', 'a', root); put(plus, P(px, 123, 38, 38)); plus.style.cssText += 'background:#00000055;border-radius:7px'; const pi = mk('img', 'a', plus); pi.style.cssText = 'left:12%;top:12%;width:76%;height:76%;object-fit:contain;opacity:.8'; live(pi, () => frameURL('GJ_plus2Btn_001.png'));
-      const sq = mk('div', 'a', root); put(sq, P(x, 197, 90, 90));
+      const plus = mk('button', 'a press', root); put(plus, P(px, 123, 38, 38)); plus.style.cssText += 'background:#00000055;border-radius:7px'; const pi = mk('img', 'a', plus); pi.style.cssText = 'left:12%;top:12%;width:76%;height:76%;object-fit:contain;opacity:.8'; live(pi, () => frameURL('GJ_plus2Btn_001.png'));
+      plus.onclick = () => openOver(() => chanDialog(ch));
+      const sq = mk('button', 'a press', root); put(sq, P(x, 197, 90, 90));
       const hexc = channelHexOf(ch), im = mk('img', 'a', sq); im.style.cssText = 'left:-6%;top:-6%;width:112%;height:112%;object-fit:contain'; live(im, () => frameURL('GJ_colorBtn_001.png', hexc));
+      sq.onclick = () => openOver(() => chanDialog(ch));
     }
     txt(root, 'big', 'More:', 38, P(1224, 125, 180, 50));
-    nbtn(root, 'GJ_button_04', null, P(1224, 197, 90, 90), null, '+', 'big', 60);
+    nbtn(root, 'GJ_button_04', null, P(1224, 197, 90, 90), () => { chPage = 0; openOver(colorsDialog); }, '+', 'big', 60);
+    nbtn(root, 'GJ_button_04', null, P(1382, 855, 160, 92), () => openOver(levelInfoDialog), 'Info', 'gold', 54);
     // game type
     const plat = hdrGet('kA22') === '1';
     nbtn(root, plat ? 'GJ_button_04' : 'GJ_button_01', null, P(538, 405, 385, 78), () => { hdrSet('kA22', 0); open(settingsDialog); }, 'Classic', 'gold', 54);
