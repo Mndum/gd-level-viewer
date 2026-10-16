@@ -4075,13 +4075,13 @@ function goptOverlay() {
     const showBoxes = GOPT.showHitboxes || (GOPT.hitboxDeath && play.dead);
     if (showBoxes && window.shellApi && shellApi.drawHitboxes) shellApi.drawHitboxes(true);
     if (GOPT.hitboxTrail) {
-      ctx.strokeStyle = 'rgba(255,90,90,.35)'; ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(255,235,40,.4)'; ctx.lineWidth = 1;
       for (const [x, y, h] of goptPlay.trail) { const [sx, sy] = toScreen(x, y), r = h * view.zoom; ctx.strokeRect(sx - r, sy - r, 2 * r, 2 * r); }
     }
     if (showBoxes) {
       const [sx, sy] = toScreen(play.x, play.g * play.ym), r = playHalf() * view.zoom, s = playSmall() * view.zoom;
-      ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(255,60,60,.95)'; ctx.fillStyle = 'rgba(255,60,60,.18)'; ctx.fillRect(sx - r, sy - r, 2 * r, 2 * r); ctx.strokeRect(sx - r, sy - r, 2 * r, 2 * r);
-      ctx.strokeStyle = 'rgba(80,170,255,.95)'; ctx.fillStyle = 'rgba(80,170,255,.35)'; ctx.fillRect(sx - s, sy - s, 2 * s, 2 * s); ctx.strokeRect(sx - s, sy - s, 2 * s, 2 * s);
+      // the player's hitbox is a yellow outline hugging the icon, like the game (no fill)
+      ctx.lineWidth = Math.max(1.5, 1.6 * view.zoom); ctx.strokeStyle = 'rgb(255,235,40)'; ctx.strokeRect(sx - r, sy - r, 2 * r, 2 * r);
     }
     if (GOPT.showClicks) {
       const now = performance.now(); goptPlay.clicks = goptPlay.clicks.filter(c => now - c[2] < 450);
