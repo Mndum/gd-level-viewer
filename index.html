@@ -1617,7 +1617,7 @@ function opAdd(objs) {
 function pushOp(op, selectAfter) {
   op.do();
   hist.undo.push(op);
-  if (hist.undo.length > 200) hist.undo.shift();
+  if (hist.undo.length > (typeof GOPT !== 'undefined' && GOPT.bigUndo ? 1000 : 200)) hist.undo.shift();
   hist.redo.length = 0;
   level.edited = true;
   if (selectAfter !== undefined) setSel(selectAfter);
@@ -3574,6 +3574,147 @@ function stopPlay() {
 
 <script>
 "use strict";
+// ================= Advanced Options =================
+// The toggles of the game's own "Advanced Options" list (read from the exe: Show Hitboxes, Hitbox On Death, Hitbox Trail, Disable Player
+// Hitbox, Auto-Retry, Faster Reset, Effect Lines, ...) that make sense in this viewer. Parental Control / Safe Mode are not included.
+const GOPT_LIST = [
+  ['autoRetry', 'Auto-Retry', true, 'Restarts the level upon death automatically'],
+  ['fastReset', 'Faster Reset', false, 'Restarts in 0.5s instead of 1.0s upon death'],
+  ['hideAttempts', 'Hide Attempts', false, 'Hides the attempt counter'],
+  ['pctDecimals', 'Percentage Decimals', false, 'Shows decimals in level progress'],
+  ['showTime', 'Show Time', false, 'Shows the time of the current attempt'],
+  ['showFps', 'Show FPS', false, 'Shows frames per second'],
+  ['hidePlaytestText', 'Hide Playtest Text', false, 'Hides the text in the top left while playing'],
+  ['noclip', 'Disable Player Hitbox', false, 'The player cannot die (counts as a cheat)'],
+  ['showHitboxes', 'Show Hitboxes', false, 'Shows hitboxes while playing'],
+  ['hitboxDeath', 'Hitbox On Death', false, 'Shows hitboxes upon death'],
+  ['hitboxTrail', 'Show Hitbox Trail', false, 'Shows a hitbox trail while playing'],
+  ['showClicks', 'Show Clicks', false, 'Shows a marker when the player clicks'],
+  ['triggerBoxes', 'Draw Trigger Boxes', false, 'Draws the hitbox for touch triggered objects'],
+  ['effectLines', 'Effect Lines', false, 'Vertical line for triggers where they are activated'],
+  ['durationLines', 'Duration Lines', false, 'Horizontal line for triggers showing how long they are active'],
+  ['gridOnTop', 'Grid On Top', false, 'Shows the grid on top of objects in the editor'],
+  ['hideBg', 'Hide Background', false, 'Hides the background in the editor'],
+  ['bigUndo', 'Increase Undo/Redo', false, 'Raises the undo and redo limit from 200 to 1000']
+];
+const GOPT = {};
+for (const [k, , d] of GOPT_LIST) GOPT[k] = d;
+try { Object.assign(GOPT, JSON.parse(localStorage.getItem('gdv_options') || '{}')); } catch (e) { }
+function goptSet(k, v) {
+  GOPT[k] = v;
+  try { localStorage.setItem('gdv_options', JSON.stringify(GOPT)); } catch (e) { }
+  goptApply(); if (typeof draw === 'function') draw();
+}
+function goptApply() {
+  const f = document.getElementById('shFps'); if (f) f.style.display = GOPT.showFps ? '' : 'none';
+  const h = document.getElementById('plHud'); if (h && GOPT.hidePlaytestText) h.hidden = true;
+}
+setTimeout(goptApply, 0);
+
+// ---- play: auto-retry, faster reset, no-clip, trail, clicks, HUD ----
+const goptPlay = { trail: [], clicks: [], t: 0, prevPress: false };
+{
+  const _update = playUpdate;
+  playUpdate = function (delta) {
+    const p = play;
+    goptPlay.t += p.dead ? 0 : delta;
+    if (p.dead) {
+      if (GOPT.fastReset && p.dead + delta > 0.5) { playReset(); return; }
+      if (!GOPT.autoRetry) {                                  // wait for a tap before restarting
+        p.dead += delta;
+        if (p.dead > 0.3 && (p.press || p.hold)) { playReset(); p.press = false; }
+        return;
+      }
+    }
+    _update(delta);
+    if (!p.dead && p.active) {
+      if (GOPT.hitboxTrail) { goptPlay.trail.push([p.x, p.g * p.ym, playHalf(), playSmall()]); if (goptPlay.trail.length > 700) goptPlay.trail.shift(); }
+      const pr = !!(p.hold || p.press);
+      if (pr && !goptPlay.prevPress && GOPT.showClicks) goptPlay.clicks.push([p.x, p.g * p.ym, performance.now()]);
+      goptPlay.prevPress = pr;
+    }
+  };
+  const _reset = playReset;
+  playReset = function () { _reset(); goptPlay.trail.length = 0; goptPlay.t = 0; };
+  const _die = playDie;
+  playDie = function () { if (GOPT.noclip) return; _die(); };
+  const _hud = hudUpdate;
+  hudUpdate = function () {
+    _hud();
+    const h = document.getElementById('plHud'); if (!h) return;
+    if (GOPT.hidePlaytestText) { h.hidden = true; return; }
+    if (GOPT.hideAttempts || GOPT.pctDecimals || GOPT.showTime || GOPT.noclip) {
+      const raw = Math.min(100, Math.max(0, play.x) / timelineModel().maxX * 100);
+      const pct = GOPT.pctDecimals ? raw.toFixed(2) : Math.floor(raw);
+      const parts = [];
+      if (!GOPT.hideAttempts) parts.push('Attempt ' + play.attempt);
+      parts.push(pct + '%', 'best ' + play.best + '%', play.mode + (play.mini ? ' (mini)' : ''));
+      if (GOPT.showTime) { const s = goptPlay.t; parts.push(Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0') + '.' + String(Math.floor(s * 10) % 10)); }
+      if (GOPT.noclip) parts.push('cheats on');
+      h.textContent = parts.join('  ·  ') + (play.done ? '  ·  level complete!' : '');
+    }
+  };
+}
+
+// ---- drawing: overlays on top of the level ----
+function goptOverlay() {
+  if (!level) return;
+  const W = canvas._w, H = canvas._h;
+  if (!W) return;
+  ctx.save();
+  const [x0, y1] = toWorld(0, 0), [x1, y0] = toWorld(W, H);
+  if (GOPT.gridOnTop && opt.grid && 30 * view.zoom > 6) {
+    ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.lineWidth = 1; ctx.beginPath();
+    for (let x = Math.floor(x0 / 30) * 30; x <= x1; x += 30) { const [sx] = toScreen(x, 0); ctx.moveTo(sx + .5, 0); ctx.lineTo(sx + .5, H); }
+    for (let y = Math.floor(y0 / 30) * 30; y <= y1; y += 30) { const [, sy] = toScreen(0, y); ctx.moveTo(0, sy + .5); ctx.lineTo(W, sy + .5); }
+    ctx.stroke();
+  }
+  if (GOPT.effectLines || GOPT.durationLines || GOPT.triggerBoxes) {
+    const m = GOPT.durationLines ? timelineModel() : null;
+    for (const o of level.objs) {
+      if (o.cls !== 'trigger' || o.x < x0 - 600 || o.x > x1) continue;
+      const [sx, sy] = toScreen(o.x, o.y);
+      if (GOPT.effectLines) { ctx.strokeStyle = 'rgba(255,230,80,.35)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(sx + .5, 0); ctx.lineTo(sx + .5, H); ctx.stroke(); }
+      if (GOPT.durationLines && o.raw && o.raw['10']) {
+        const dur = Number(o.raw['10']) || 0;
+        if (dur > 0) { ctx.strokeStyle = 'rgba(90,220,255,.7)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx + dur * m.speedAt(o.x) * view.zoom, sy); ctx.stroke(); }
+      }
+      if (GOPT.triggerBoxes && o.raw && o.raw['11'] === '1') {
+        const r = 15 * view.zoom; ctx.strokeStyle = 'rgba(190,110,255,.95)'; ctx.fillStyle = 'rgba(190,110,255,.2)'; ctx.lineWidth = 1.5;
+        ctx.fillRect(sx - r, sy - r, 2 * r, 2 * r); ctx.strokeRect(sx - r, sy - r, 2 * r, 2 * r);
+      }
+    }
+  }
+  if (play.active) {
+    const showBoxes = GOPT.showHitboxes || (GOPT.hitboxDeath && play.dead);
+    if (showBoxes && window.shellApi && shellApi.drawHitboxes) shellApi.drawHitboxes(true);
+    if (GOPT.hitboxTrail) {
+      ctx.strokeStyle = 'rgba(255,90,90,.35)'; ctx.lineWidth = 1;
+      for (const [x, y, h] of goptPlay.trail) { const [sx, sy] = toScreen(x, y), r = h * view.zoom; ctx.strokeRect(sx - r, sy - r, 2 * r, 2 * r); }
+    }
+    if (showBoxes) {
+      const [sx, sy] = toScreen(play.x, play.g * play.ym), r = playHalf() * view.zoom, s = playSmall() * view.zoom;
+      ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(255,60,60,.95)'; ctx.fillStyle = 'rgba(255,60,60,.18)'; ctx.fillRect(sx - r, sy - r, 2 * r, 2 * r); ctx.strokeRect(sx - r, sy - r, 2 * r, 2 * r);
+      ctx.strokeStyle = 'rgba(80,170,255,.95)'; ctx.fillStyle = 'rgba(80,170,255,.35)'; ctx.fillRect(sx - s, sy - s, 2 * s, 2 * s); ctx.strokeRect(sx - s, sy - s, 2 * s, 2 * s);
+    }
+    if (GOPT.showClicks) {
+      const now = performance.now(); goptPlay.clicks = goptPlay.clicks.filter(c => now - c[2] < 450);
+      for (const [x, y, t] of goptPlay.clicks) { const [sx, sy] = toScreen(x, y), k = (now - t) / 450; ctx.strokeStyle = `rgba(255,255,255,${1 - k})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx, sy, (10 + 24 * k) * view.zoom, 0, 6.2832); ctx.stroke(); }
+    }
+  }
+  ctx.restore();
+}
+{
+  const _draw = draw;
+  draw = function () {
+    if (GOPT.hideBg && opt.bg) { opt.bg = false; try { _draw(); } finally { opt.bg = true; } } else _draw();
+    goptOverlay();
+  };
+}
+</script>
+
+<script>
+"use strict";
 // ================= editor shell: the real editor's layout, built from the game's own UI sprites =================
 // The page's existing functions do the work (undo, delete, play...); this layer only changes how it looks and where the buttons are.
 (function editorShell() {
@@ -3851,8 +3992,8 @@ function stopPlay() {
     ignore: false, effect: true, dur: true, song: false, bpm: false, kframe: true, m1: false, m2: false, m3: false, tin: false, tout: false };
   // Hitboxes: the sizes come from the game's own object setup (HIT_TABLE / hitSize in the play code). Blue = solid, red = hazard, green = pads, orbs and portals.
   const SPECIAL_TYPES = new Set([3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 26, 27, 29, 32, 33, 34, 35, 41, 43, 46]);
-  function drawHitboxes() {
-    if (!level || !viewState.hitbox || typeof hitSize !== 'function') return;
+  function drawHitboxes(force) {
+    if (!level || !(force || viewState.hitbox) || typeof hitSize !== 'function') return;
     const W = canvas._w, H = canvas._h, [x0, y1] = toWorld(0, 0), [x1, y0] = toWorld(W, H);
     ctx.save(); ctx.lineWidth = 1.5;
     for (const o of level.objs) {
@@ -4230,7 +4371,7 @@ function stopPlay() {
   draw = function () { _draw(); try { syncSlider(); } catch (e) { /* cosmetic */ } };
   setTimeout(() => { layout(); applyToggles(); setShellTab('build'); }, 0);
   setInterval(refresh, 700);
-  window.shellApi = { editRaw: (objs, fn, name) => pushOp(opRaw(objs, fn, name)), setKey, selList, refresh, layout, setShellTab, S, paintBuild, frameURL, baseURL, textURL, cropURL };
+  window.shellApi = { drawHitboxes, editRaw: (objs, fn, name) => pushOp(opRaw(objs, fn, name)), setKey, selList, refresh, layout, setShellTab, S, paintBuild, frameURL, baseURL, textURL, cropURL };
 })();
 </script>
 
@@ -4381,7 +4522,7 @@ function stopPlay() {
     for (const [t, y, fn] of items) nbtn(root, 'GJ_button_01', null, { cx: 960, cy: y, w: 660, h: 96 }, fn, t, 'gold', 64);
     const side = [['Settings', 'GJ_sSettingsIcon_001.png', 67, () => openOver(settingsDialog)], ['Export', 'GJ_sExportIcon_001.png', 175, () => { if (typeof saveLevel === 'function') saveLevel(); }],
       ['Editor SFX', 'GJ_sSFXIcon_001.png', 282, null], ['Auto-Save', 'GJ_sSaveIcon_001.png', 390, null], ['Death Stats', 'GJ_sMarkerIcon_001.png', 498, null],
-      ['Get Audio', 'GJ_sAudioDLIcon_001.png', 606, () => { close(); $('menu').classList.add('on'); }], ['Help', 'GJ_sHelpIcon_001.png', 715, () => window.open('https://store.steampowered.com/app/322170/Geometry_Dash/', '_blank')]];
+      ['Options', 'GJ_sSettingsIcon_001.png', 823, () => openOver(advancedDialog)], ['Get Audio', 'GJ_sAudioDLIcon_001.png', 606, () => { close(); $('menu').classList.add('on'); }], ['Help', 'GJ_sHelpIcon_001.png', 715, () => window.open('https://store.steampowered.com/app/322170/Geometry_Dash/', '_blank')]];
     for (const [t, ic, y, fn] of side) {
       const b = nbtn(root, 'GJ_button_05', '5b6785', { cx: 1750, cy: y, w: 286, h: 92 }, fn, null);
       b.style.left = `calc(100% - ${(DW - 1750 + 143)} * var(--k))`; b.style.top = `calc(${y - 46} * var(--k))`;
@@ -4613,6 +4754,23 @@ function stopPlay() {
     nbtn(root, 'GJ_button_01', null, o(500, h - 70, 190, 90), close, 'OK', 'gold', 60);
   }
   function openEditSpecial() { if (!level || !specialOf()) return; stack.length = 0; current = editSpecialDialog; open(editSpecialDialog); }
+
+  // Advanced Options: the toggles in GOPT_LIST (options.js), six to a page
+  let advPage = 0;
+  function advancedDialog() {
+    const per = 6, pages = Math.ceil(GOPT_LIST.length / per);
+    const o = smallDialog(1100, 960, 'Advanced Options', 80);
+    GOPT_LIST.slice(advPage * per, advPage * per + per).forEach(([k, label, , desc], i) => {
+      const y = 215 + i * 105, on = !!GOPT[k];
+      txt(root, 'gold', label, 50, o(400, y - 14, 700, 64), 'left');
+      txt(root, 'big', desc, 26, o(400, y + 28, 700, 40), 'left');
+      nbtn(root, on ? 'GJ_button_02' : 'GJ_button_04', null, o(950, y, 150, 80), () => { goptSet(k, !on); open(advancedDialog); }, on ? 'ON' : 'OFF', 'big', 44);
+    });
+    nbtn(root, 'GJ_button_04', null, o(160, 830, 120, 80), () => { advPage = (advPage + pages - 1) % pages; open(advancedDialog); }, '<', 'big', 56);
+    txt(root, 'gold', (advPage + 1) + ' / ' + pages, 46, o(550, 830, 220, 70));
+    nbtn(root, 'GJ_button_04', null, o(940, 830, 120, 80), () => { advPage = (advPage + 1) % pages; open(advancedDialog); }, '>', 'big', 56);
+    nbtn(root, 'GJ_button_01', null, o(550, 910, 190, 80), back, 'OK', 'gold', 54);
+  }
   // ---------- entry points ----------
   function openPause() { if (!level) return; current = pauseMenu; stack.length = 0; open(pauseMenu); }
   function openSettings() { if (!level) return; stack.length = 0; current = settingsDialog; open(settingsDialog); }
@@ -4623,7 +4781,8 @@ function stopPlay() {
   }, true);
   function openEditGroup() { if (!level || !selObjs().length) return; stack.length = 0; current = editGroupDialog; open(editGroupDialog); }
   function openEditObject() { if (!level || !selObjs().length) return; stack.length = 0; current = editObjectDialog; open(editObjectDialog); }
-  window.dialogsApi = { openEditSpecial, hasSpecial: () => !!specialOf(), openEditGroup, openEditObject, openPause, openSettings, close, hdrGet, hdrSet };
+  function openAdvanced() { if (!level) return; stack.length = 0; current = advancedDialog; open(advancedDialog); }
+  window.dialogsApi = { openAdvanced, openEditSpecial, hasSpecial: () => !!specialOf(), openEditGroup, openEditObject, openPause, openSettings, close, hdrGet, hdrSet };
 })();
 </script>
 <script>
