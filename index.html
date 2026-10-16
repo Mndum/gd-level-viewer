@@ -2902,10 +2902,29 @@ function orbLaunch(kind, jump) {
   if (m === 'ball' || m === 'spider') v *= 0.7; else if (m === 'swing') v *= 2;
   return v;
 }
-// hitboxes: [width, height, offset x, offset y] in level units before scale and rotation
-const HIT_BLOCK = { 40: [30, 15, 0, -7.5] };
-const HIT_SPIKE = { 39: [6, 6, 0, -12], 103: [6, 6, 0, -12] };
-
+// Hitboxes, read from GameObject::customSetup and GameObject::getObjectRect in the exe. A hitbox is centred on the object's position
+// (the position in the level file is already the sprite's centre) and measures: base size * object scale * a per-object multiplier.
+// The base size is the sprite's untrimmed size unless the object sets its own. HIT_TABLE: id -> [type, multiplier x, multiplier y, base w, base h]
+// for every hazard (type 2: spikes and pits, 0.2 x 0.4), pad (8, 9, 10, 34), orb (11, 12, 13, 29, 32, 35: x1.2) and every object with an own size.
+const HIT_TABLE = {"8":[2,0.2,0.4,30,30],"9":[2,0.2,0.4,null,null],"35":[8,1,1,null,null],"36":[11,1.2,1.2,null,null],"39":[2,0.2,0.4,null,null],"61":[2,0.2,0.4,null,null],"67":[10,1,1,null,null],"69":[0,1,1,30,30],"70":[0,1,1,30,30],"71":[0,1,1,30,30],"72":[0,1,1,30,30],"73":[7,1,1,30,30],"74":[0,1,1,30,30],"75":[0,1,1,30,30],"76":[0,1,1,30,30],"77":[0,1,1,30,30],"78":[0,1,1,30,30],"80":[7,1,1,30,30],"81":[0,1,1,30,30],"82":[0,1,1,30,30],"84":[13,1.2,1.2,null,null],"103":[2,0.2,0.4,null,null],"135":[2,0.2,0.4,null,null],"140":[9,1,1,null,null],"141":[12,1.2,1.2,null,null],"144":[2,0.2,0.4,null,null],"145":[2,0.2,0.4,null,null],"177":[2,0.2,0.4,null,null],"178":[2,0.2,0.4,null,null],"179":[2,0.2,0.4,null,null],"205":[2,0.2,0.4,null,null],"216":[2,0.2,0.4,null,null],"217":[2,0.2,0.4,null,null],"218":[2,0.2,0.4,null,null],"243":[2,0.2,0.4,null,null],"244":[2,0.2,0.4,null,null],"263":[-1,1,1,30,30],"264":[-1,1,1,30,30],"265":[-1,1,1,30,30],"266":[7,1,1,30,30],"267":[-1,1,1,30,30],"268":[-1,1,1,30,30],"305":[25,1,1,30,30],"307":[25,1,1,60,30],"349":[25,1,1,30,30],"351":[25,1,1,60,30],"364":[25,1,1,60,30],"365":[2,0.2,0.4,null,null],"367":[25,1,1,60,30],"368":[2,0.2,0.4,null,null],"392":[2,0.2,0.4,null,null],"421":[2,0.2,0.4,null,null],"422":[2,0.2,0.4,null,null],"446":[2,0.2,0.4,null,null],"447":[2,0.2,0.4,null,null],"458":[2,0.2,0.4,null,null],"459":[2,0.2,0.4,null,null],"469":[-1,1,1,30,30],"471":[-1,1,1,30,30],"522":[25,1,1,null,30],"523":[25,1,1,null,30],"667":[2,0.3,0.4,null,null],"720":[2,0.3,0.4,null,null],"747":[28,1,1,25,null],"768":[2,0.2,0.4,null,null],"919":[2,1,1,null,null],"925":[7,1,1,70,70],"926":[7,1,1,70,70],"989":[2,0.3,0.4,null,null],"991":[2,0.3,0.4,null,null],"1022":[29,1.2,1.2,null,null],"1049":[20,1,1,30,30],"1120":[7,1,1,30,30],"1122":[7,1,1,30,30],"1123":[7,1,1,30,30],"1124":[7,1,1,30,30],"1125":[7,1,1,30,30],"1126":[7,1,1,30,30],"1127":[7,1,1,30,30],"1132":[7,1,1,30,30],"1133":[7,1,1,30,30],"1134":[7,1,1,30,30],"1135":[7,1,1,30,30],"1136":[7,1,1,30,30],"1137":[7,1,1,30,30],"1138":[7,1,1,15,15],"1139":[7,1,1,15,15],"1157":[0,1,1,15,15],"1208":[-1,1,1,15,15],"1241":[7,1,1,15,15],"1242":[7,1,1,15,15],"1243":[7,1,1,15,15],"1244":[7,1,1,15,15],"1245":[7,1,1,15,15],"1246":[7,1,1,15,15],"1275":[0,1,1,25,20],"1330":[32,1.2,1.2,null,null],"1332":[34,1,1,null,null],"1333":[35,1.2,1.2,null,null],"1587":[0,1,1,25,20],"1589":[0,1,1,25,20],"1594":[36,1,1,36,36],"1598":[0,1,1,25,20],"1701":[2,1,1,null,null],"1702":[2,1,1,null,null],"1703":[2,1,1,null,null],"1704":[-1,1.2,1.2,null,null],"1711":[2,0.2,0.4,null,null],"1712":[2,0.2,0.4,null,null],"1713":[2,0.2,0.4,null,null],"1714":[2,0.2,0.4,null,null],"1715":[2,0.2,0.4,null,null],"1716":[2,0.2,0.4,null,null],"1718":[25,1,1,60,30],"1719":[2,0.2,0.4,null,null],"1720":[2,0.2,0.4,null,null],"1721":[2,0.2,0.4,null,null],"1722":[2,0.2,0.4,null,null],"1724":[25,1,1,60,30],"1725":[2,0.2,0.4,null,null],"1726":[2,0.2,0.4,null,null],"1727":[2,0.2,0.4,null,null],"1728":[2,0.2,0.4,null,null],"1729":[2,0.2,0.4,null,null],"1730":[2,0.3,0.4,null,null],"1731":[2,0.3,0.4,null,null],"1732":[2,0.3,0.4,null,null],"1733":[2,0.3,0.4,null,null],"1751":[-1,1.2,1.2,null,null],"1759":[7,1,1,60,30],"1761":[7,1,1,60,30],"1763":[7,1,1,60,30],"2902":[28,1,1,25,null],"3004":[43,1.2,1.2,null,null],"3027":[46,1.2,1.2,null,null],"3034":[2,0.2,0.4,null,null],"3035":[2,0.2,0.4,null,null],"3036":[2,0.2,0.4,null,null],"3037":[2,0.2,0.4,null,null],"3601":[0,1,1,25,20],"3610":[2,1,1,null,null],"3611":[2,1,1,null,null]};
+const SRC_SIZE = {"bump_01_001.png":[25,4],"bump_02_001.png":[28.75,6.5],"bump_03_001.png":[25,5],"dropRing_01_001.png":[32.5,32.5],"gravJumpRing_01_001.png":[29.5,29.5],"gravbump_01_001.png":[25,6],"gravring_01_001.png":[30,30],"pit_01_001.png":[30.25,26.5],"pit_04_001.png":[30.25,26],"plank_01_001.png":[30,13.5],"ring_01_001.png":[30,30],"ring_02_001.png":[31.5,31.5],"ring_03_001.png":[30.25,30],"spike_01_001.png":[30,30],"spike_02_001.png":[30,13.5],"spike_03_001.png":[20,19],"portal_01_front_001.png":[34.5,77],"portal_02_front_001.png":[34.5,77],"portal_03_front_001.png":[44.5,85.5],"portal_04_front_001.png":[44.5,85.5],"portal_05_front_001.png":[58.5,90.5],"portal_06_front_001.png":[58.5,90.5],"portal_07_front_001.png":[44.5,85.5],"portal_08_front_001.png":[44,89.5],"portal_09_front_001.png":[43.75,89.5],"portal_10_front_001.png":[44.5,85.5],"portal_11_front_001.png":[43,90],"portal_12_front_001.png":[43,90],"portal_13_front_001.png":[44.5,85.5],"portal_14_front_001.png":[44.5,85.5],"portal_15_front_001.png":[55,90],"portal_17_front_001.png":[44.5,84.5],"portal_18_front_001.png":[44.5,85.5]};                                             // untrimmed sizes of the sprites that matter, in level units
+// round hazards (saws and cogwheels): the game gives them a radius of 0.3 * the sprite's width and tests a circle against the player's
+// hazard box. id -> sprite width
+const SAW_WIDTH = { 88: 83.5, 89: 60, 98: 39.75, 186: 84, 187: 60.75, 188: 42, 397: 84.5, 398: 54.5, 399: 43, 675: 80, 676: 51.5, 677: 39,
+  740: 84, 741: 60.75, 742: 42, 1705: 83.5, 1706: 60, 1707: 39.75, 1708: 84.5, 1709: 54.5, 1710: 43 };
+function baseSize(id) {
+  const e = HIT_TABLE[id], nm = ID_FRAMES[id];
+  let w = 30, h = 30;
+  if (SRC_SIZE[nm]) { w = SRC_SIZE[nm][0]; h = SRC_SIZE[nm][1]; }
+  else { const fi = nm && atlas.frames.get(nm); if (fi) { w = fi.w / fi.sheet.Q; h = fi.h / fi.sheet.Q; } }
+  if (e && e[3] != null) w = e[3];
+  if (e && e[4] != null) h = e[4];
+  return [w, h];
+}
+function hitSize(id, fallbackMult) {
+  const e = HIT_TABLE[id], b = baseSize(id), m = e ? [e[1], e[2]] : (fallbackMult || [1, 1]);
+  return [b[0] * m[0], b[1] * m[1]];
+}
 function objBox(o, w, h, ox, oy) {
   const a = -o.rot * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
   const px = ox * o.sx * (o.flipX ? -1 : 1), py = oy * o.sy * (o.flipY ? -1 : 1);
@@ -2942,16 +2961,23 @@ function buildPlayWorld() {
     }
   };
   for (const o of level.objs) {
-    if (o.cls === 'block') { const h = HIT_BLOCK[o.id] || [30, 30, 0, 0]; put(w.solids, objBox(o, h[0], h[1], h[2], h[3])); }
+    if (SAW_WIDTH[o.id]) {
+      const r = 0.3 * SAW_WIDTH[o.id] * Math.max(Math.abs(o.sx), Math.abs(o.sy)), b = { l: o.x - r, r: o.x + r, b: o.y - r, t: o.y + r, o, st: 0, circle: { x: o.x, y: o.y, r } };
+      put(w.hazards, b);
+    } else if (o.cls === 'block') {                                       // 30 x 30 unless the sprite is a different size (slabs, planks)
+      const b = baseSize(o.id), e = HIT_TABLE[o.id];
+      const sz = [e && e[3] != null ? e[3] : (Math.abs(b[0] - 30) > 1.5 ? b[0] : 30), e && e[4] != null ? e[4] : (Math.abs(b[1] - 30) > 1.5 ? b[1] : 30)];
+      put(w.solids, objBox(o, sz[0], sz[1], 0, 0));
+    }
     else if (o.cls === 'slope') { const b = slopeBox(o); if (b) put(w.slopes, b); }
-    else if (o.cls === 'spike') { const h = HIT_SPIKE[o.id] || [6, 12, 0, -9]; put(w.hazards, objBox(o, h[0], h[1], h[2], h[3])); }
+    else if (o.cls === 'spike') { const s = hitSize(o.id, [0.2, 0.4]); put(w.hazards, objBox(o, s[0], s[1], 0, 0)); }
     else if (o.cls === 'padorb') {
-      if (PAD_KIND[o.id]) put(w.pads, objBox(o, 30, 8, 0, -11));
-      else if (ORB_KIND[o.id]) put(w.orbs, objBox(o, 36, 36, 0, 0));
+      if (PAD_KIND[o.id]) { const s = hitSize(o.id); put(w.pads, objBox(o, s[0], s[1], 0, 0)); }
+      else if (ORB_KIND[o.id]) { const s = hitSize(o.id, [1.2, 1.2]); put(w.orbs, objBox(o, s[0], s[1], 0, 0)); }
     } else if (o.cls === 'portal' && (o.id === 10 || o.id === 11)) {
-      const b = objBox(o, 34, 86, 0, 0); b.grav = o.id === 11 ? -1 : 1; put(w.gports, b);
+      const s = hitSize(o.id), b = objBox(o, s[0], s[1], 0, 0); b.grav = o.id === 11 ? -1 : 1; put(w.gports, b);
     } else if (o.cls === 'portal' && (MODE_PORTAL[o.id] || o.id === 99 || o.id === 101)) {
-      const b = objBox(o, 34, 86, 0, 0); b.mode = MODE_PORTAL[o.id] || null; b.mini = o.id === 101 ? 1 : o.id === 99 ? -1 : 0; b.py = o.y; put(w.mports, b);
+      const s = hitSize(o.id), b = objBox(o, s[0], s[1], 0, 0); b.mode = MODE_PORTAL[o.id] || null; b.mini = o.id === 101 ? 1 : o.id === 99 ? -1 : 0; b.py = o.y; put(w.mports, b);
     }
   }
   return w;
@@ -3212,7 +3238,11 @@ function playCollide(speed) {
         else if (overlaps(small2, b)) { playDie(); return; }
       }
     } else if (e.kind === w.hazards) {
-      if (overlaps(small2, b)) { playDie(); return; }
+      if (e.box.circle) {                                          // a saw: the nearest point of the player's box to the circle's centre
+        const c = e.box.circle, cy = g > 0 ? c.y : -c.y;
+        const nx = Math.min(Math.max(c.x, small2.l), small2.r), ny = Math.min(Math.max(cy, small2.b), small2.t);
+        if ((nx - c.x) * (nx - c.x) + (ny - cy) * (ny - cy) < c.r * c.r) { playDie(); return; }
+      } else if (overlaps(small2, b)) { playDie(); return; }
     } else if (e.kind === w.pads) {
       if (overlaps(rect2, b)) {
         if (!p.touched.has(e.box)) {
