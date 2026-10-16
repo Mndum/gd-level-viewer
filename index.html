@@ -748,6 +748,16 @@ function colorFor(o, alpha) {
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${alpha})`;
 }
+const previewOnNow = () => { try { return typeof previewOn === 'function' && previewOn(); } catch (e) { return false; } };
+const unitSizes = new Map();          // object id -> its sprite's size in level units (for deciding when it is only a dot)
+function unitSize(id) {
+  let u = unitSizes.get(id);
+  if (u !== undefined) return u;
+  const fi = atlas.ready && ID_FRAMES[id] && atlas.frames.get(ID_FRAMES[id]);
+  u = fi ? Math.max(fi.w, fi.h) / ((fi.sheet && fi.sheet.Q) || atlas.Q || 2) : 30;
+  if (atlas.ready) unitSizes.set(id, u);
+  return u;
+}
 function visible(o) {
   if (o.cls === 'deco' && !opt.deco) return false;
   if (o.cls === 'trigger' && !opt.trig) return false;
@@ -794,11 +804,27 @@ function draw() {
     let cull = true;
     try { if (typeof previewOn === 'function' && previewOn()) { const ev = timelineModel().ev; cull = !(ev.move.size || ev.follow.size || ev.rot.size || ev.scale.size); } } catch (e) { cull = true; }
     const [cx0, cy1] = toWorld(0, 0), [cx1, cy0] = toWorld(W, H);
+    // zoomed far out, an object only a few pixels wide is drawn as a coloured dot, batched by colour (nothing else about it can be seen)
+    const dots = (!previewOnNow() && highlight === null) ? new Map() : null, dotColors = new Map();
+    const CLS_I = { deco: 0, block: 1, spike: 2, portal: 3, padorb: 4, trigger: 5 };
+    const zm = view.zoom;
     for (const o of level.zSorted) {
       if (!visible(o)) continue;
       if (cull) { const r = 30 * Math.max(o.sx, o.sy) + 60; if (o.x < cx0 - r || o.x > cx1 + r || o.y < cy0 - r || o.y > cy1 + r) continue; }
+      if (dots) {
+        const reach = unitSize(o.id) * Math.max(o.sx, o.sy) * zm;
+        if (reach < 6) {
+          const key = o.col * 8 + (CLS_I[o.cls] || 0);
+          let c = dotColors.get(key); if (c === undefined) { c = colorFor(o, o.cls === 'deco' ? 0.55 : 0.9); dotColors.set(key, c); }
+          let arr = dots.get(c); if (!arr) { arr = []; dots.set(c, arr); }
+          const [sx, sy] = toScreen(o.x, o.y); const s = Math.max(1.6, reach * 0.9);
+          arr.push(sx - s / 2, sy - s / 2, s);
+          continue;
+        }
+      }
       drawObject(o, highlight !== null && o.id !== highlight);
     }
+    if (dots) for (const [c, arr] of dots) { ctx.fillStyle = c; for (let i = 0; i < arr.length; i += 3) ctx.fillRect(arr[i], arr[i + 1], arr[i + 2], arr[i + 2]); }
   } else {
     const order = ['deco', 'block', 'slope', 'spike', 'portal', 'padorb', 'trigger'];
     for (const cls of order) {
@@ -1671,7 +1697,9 @@ function afterEdit(structural) {
     level.zSorted = level.objs.slice().sort((a, b) => (a.zl - b.zl) || (a.zo - b.zo) || (a.idx - b.idx));
     pruneSelection();
   }
-  renderUi(lastName);
+  // the object counts in the side panel only change when objects are added or removed, and rebuilding it is slow on big levels, so it
+  // is skipped for moves and property changes and run once after a burst of adds/deletes
+  if (structural) { clearTimeout(afterEdit.timer); afterEdit.timer = setTimeout(() => renderUi(lastName), 120); }
   updateEditUi();
   draw();
 }
