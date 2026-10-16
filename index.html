@@ -3613,7 +3613,7 @@ function stopPlay() {
   addEventListener('keydown', e => { if (e.code === 'Escape' && overlay.classList.contains('on')) { e.stopImmediatePropagation(); close(); } }, true);
 
   // the address of your level-search worker (worker/level-service.worker.js). Put it in DEFAULT_LEVEL_SERVICE to bake it in, or paste it in the dialog.
-  const DEFAULT_LEVEL_SERVICE = '';
+  const DEFAULT_LEVEL_SERVICE = 'https://level-service.monochromdum.workers.dev';
   const SERVICE_KEY = 'gd-level-viewer.levelService';
   const base = () => { try { return (localStorage.getItem(SERVICE_KEY) || DEFAULT_LEVEL_SERVICE).replace(/\/+$/, ''); } catch (e) { return DEFAULT_LEVEL_SERVICE; } };
   async function api(path) {
