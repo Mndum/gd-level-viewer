@@ -310,6 +310,14 @@ function classify(id) {
 }
 const CLASS_COLOR = { spike: '#ff5a6e', block: '#5a7cff', slope: '#5a7cff', portal: '#ffa94d', padorb: '#ffd24d', trigger: '#e7e04a', deco: '#9aa6d6' };
 
+// "hue a saturation a brightness a saturationIsAdded a brightnessIsAdded" -> {h, s, v, sAdd, vAdd}
+function parseHsvString(str) {
+  if (!str) return null;
+  const p = String(str).split('a').map(Number);
+  if (p.length < 3 || p.some(n => !Number.isFinite(n))) return null;
+  if (p[0] === 0 && p[1] === 1 && p[2] === 1 && !p[3] && !p[4]) return null;
+  return { h: p[0], s: p[1], v: p[2], sAdd: !!p[3], vAdd: !!p[4] };
+}
 function parseChannels(headerStr) {
   const map = new Map();
   const m = headerStr.match(/(?:^|,)kS38,([^,]*)/);
@@ -320,7 +328,10 @@ function parseChannels(headerStr) {
     for (let i = 0; i + 1 < p.length; i += 2) f[p[i]] = p[i + 1];
     if (f['6'] === undefined) continue;
     const op = f['7'] !== undefined ? Number(f['7']) : 1;
-    map.set(Number(f['6']), { r: +f['1'] || 0, g: +f['2'] || 0, b: +f['3'] || 0, a: isNaN(op) ? 1 : op });
+    const pc = Number(f['4']);                                       // 1 / 2: the channel is the player's first / second colour
+    const copyId = Number(f['9']) || 0;                              // a channel that copies another one (with a hue / saturation / brightness change)
+    map.set(Number(f['6']), { r: +f['1'] || 0, g: +f['2'] || 0, b: +f['3'] || 0, a: isNaN(op) ? 1 : op, blend: f['5'] === '1',
+      player: pc === 1 || pc === 2 ? pc : 0, copy: copyId > 0 ? { id: copyId, hsv: parseHsvString(f['10']), op: f['17'] === '1' } : null });
   }
   return map;
 }
@@ -748,6 +759,72 @@ function colorFor(o, alpha) {
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${alpha})`;
 }
+// A column index over the level so only the objects near the view are looked at each frame (a 300,000-object level spent 11 ms per frame just
+// walking the list). Rebuilt whenever objects are added, removed, moved or re-ordered (gridStamp); skipped while a drag is moving objects.
+let gridStamp = 0;
+const GRID_W = 240, GRID_M = 150;
+const NO_GROUPS = [];
+function buildGrid(L) {
+  const cols = new Map(), big = [], members = new Map();
+  const z = L.zSorted;
+  for (let i = 0; i < z.length; i++) {
+    const o = z[i]; o.zi = i;
+    if (o._gtxt !== o.groups) {                                      // the object's group numbers, parsed once
+      o._gtxt = o.groups;
+      o._gl = o.groups ? String(o.groups).split('.').map(Number).filter(n => n > 0) : NO_GROUPS;
+    }
+    for (let k = 0; k < o._gl.length; k++) { let m = members.get(o._gl[k]); if (!m) { m = []; members.set(o._gl[k], m); } m.push(o); }
+    if (30 * Math.max(o.sx, o.sy) + 60 > GRID_M) { big.push(o); continue; }
+    const c = Math.floor(o.x / GRID_W);
+    let a = cols.get(c); if (!a) { a = []; cols.set(c, a); }
+    a.push(o);
+  }
+  L._g = { cols, big, members }; L._gs = gridStamp; L._gz = z;
+}
+function gridCandidates(L, x0, x1, out) {
+  if (!L._g || L._gs !== gridStamp || L._gz !== L.zSorted) buildGrid(L);
+  const g = L._g;
+  const c0 = Math.floor((x0 - GRID_M) / GRID_W), c1 = Math.floor((x1 + GRID_M) / GRID_W);
+  for (let c = c0; c <= c1; c++) { const a = g.cols.get(c); if (a) for (let i = 0; i < a.length; i++) out.push(a[i]); }
+  for (let i = 0; i < g.big.length; i++) out.push(g.big[i]);
+  return out;
+}
+function gridList(L, x0, x1) { const out = gridCandidates(L, x0, x1, []); out.sort((a, b) => a.zi - b.zi); return out; }
+// while triggers move, rotate or scale groups, only the objects that are near the view at their own position, plus the members of
+// groups that are currently displaced and end up near the view, are looked at (the rest of a 300,000-object level is not touched)
+function movingList(L, x0, x1, y0, y1) {
+  const st = stateAt(tlPos()).groups;
+  const moving = new Map();
+  for (const [g, s] of st) if (s.dx || s.dy || s.rot || s.sx !== 1 || s.sy !== 1) moving.set(g, s);
+  const out = [];
+  const near = gridCandidates(L, x0, x1, []);
+  if (!moving.size) { near.sort((a, b) => a.zi - b.zi); return near; }
+  for (let i = 0; i < near.length; i++) {
+    const o = near[i], gl = o._gl;
+    let mv = false;
+    for (let k = 0; k < gl.length; k++) if (moving.has(gl[k])) { mv = true; break; }
+    if (!mv) out.push(o);
+  }
+  const frame = L._mf = (L._mf || 0) + 1;
+  const members = L._g.members;
+  for (const g of moving.keys()) {
+    const arr = members.get(g); if (!arr) continue;
+    for (let i = 0; i < arr.length; i++) {
+      const o = arr[i];
+      if (o._mf === frame) continue;
+      o._mf = frame;
+      let dx = 0, dy = 0, complex = false;
+      for (let k = 0; k < o._gl.length; k++) { const s = moving.get(o._gl[k]); if (s) { dx += s.dx; dy += s.dy; if (s.rot || s.sx !== 1 || s.sy !== 1) complex = true; } }
+      if (!complex) {
+        const r = 30 * Math.max(o.sx, o.sy) + 60, px = o.x + dx, py = o.y + dy;
+        if (px < x0 - r || px > x1 + r || py < y0 - r || py > y1 + r) continue;
+      }
+      out.push(o);
+    }
+  }
+  out.sort((a, b) => a.zi - b.zi);
+  return out;
+}
 const previewOnNow = () => { try { return typeof previewOn === 'function' && previewOn(); } catch (e) { return false; } };
 const unitSizes = new Map();          // object id -> its sprite's size in level units (for deciding when it is only a dot)
 function unitSize(id) {
@@ -808,7 +885,11 @@ function draw() {
     const dots = (!previewOnNow() && highlight === null) ? new Map() : null, dotColors = new Map();
     const CLS_I = { deco: 0, block: 1, spike: 2, portal: 3, padorb: 4, trigger: 5 };
     const zm = view.zoom;
-    for (const o of level.zSorted) {
+    const draggingObjs = typeof drag !== 'undefined' && drag;
+    const big = !draggingObjs && level.zSorted.length > 3000;
+    let drawList = level.zSorted;
+    if (big) { try { drawList = cull ? gridList(level, cx0, cx1) : movingList(level, cx0, cx1, cy0, cy1); } catch (e) { drawList = level.zSorted; } }
+    for (const o of drawList) {
       if (!visible(o)) continue;
       if (cull) { const r = 30 * Math.max(o.sx, o.sy) + 60; if (o.x < cx0 - r || o.x > cx1 + r || o.y < cy0 - r || o.y > cy1 + r) continue; }
       if (dots) {
@@ -1664,7 +1745,7 @@ function opDelete(objs) {
 function opAdd(objs) {
   return {
     name: 'duplicate', structural: true,
-    do() { level.objs.push(...objs); },
+    do() { for (const o of objs) level.objs.push(o); },
     undo() { const s = new Set(objs); level.objs = level.objs.filter(o => !s.has(o)); }
   };
 }
@@ -1693,6 +1774,7 @@ function pruneSelection() {
   setSel(keep, keep.includes(view.selected) ? view.selected : undefined);
 }
 function afterEdit(structural) {
+  gridStamp++;                                                // the view's object index is out of date
   if (structural) {
     level.zSorted = level.objs.slice().sort((a, b) => (a.zl - b.zl) || (a.zo - b.zo) || (a.idx - b.idx));
     pruneSelection();
@@ -2111,8 +2193,11 @@ function colorTriggerInfo(o) {
   if (o.id === 899) chanId = rawNum(o, '23', 0);
   else if (LEGACY_COLOR[o.id] !== undefined) chanId = LEGACY_COLOR[o.id];
   else return null;
+  const cp = rawNum(o, '50', 0);
   return { chan: chanId, r: rawNum(o, '7', 255), g: rawNum(o, '8', 255), b: rawNum(o, '9', 255),
-           a: rawNum(o, '35', 1), dur: rawNum(o, '10', 0) };
+           a: rawNum(o, '35', 1), dur: rawNum(o, '10', 0), blend: o.raw['17'] === '1',
+           player: o.raw['15'] === '1' ? 1 : o.raw['16'] === '1' ? 2 : 0,
+           copy: cp > 0 ? { id: cp, hsv: parseHsvString(o.raw['49']), op: o.raw['60'] === '1' } : null };
 }
 function triggerFlags(o) {
   const f = [];
@@ -2179,8 +2264,11 @@ function colorTriggerInfo(o) {
   if (o.id === 899) chanId = rawNum(o, '23', 0);
   else if (LEGACY_COLOR[o.id] !== undefined) chanId = LEGACY_COLOR[o.id];
   else return null;
+  const cp = rawNum(o, '50', 0);
   return { chan: chanId, r: rawNum(o, '7', 255), g: rawNum(o, '8', 255), b: rawNum(o, '9', 255),
-           a: rawNum(o, '35', 1), dur: rawNum(o, '10', 0) };
+           a: rawNum(o, '35', 1), dur: rawNum(o, '10', 0), blend: o.raw['17'] === '1',
+           player: o.raw['15'] === '1' ? 1 : o.raw['16'] === '1' ? 2 : 0,
+           copy: cp > 0 ? { id: cp, hsv: parseHsvString(o.raw['49']), op: o.raw['60'] === '1' } : null };
 }
 function triggerFlags(o) {
   const f = [];
@@ -2324,7 +2412,7 @@ function buildTimeline() {
     if (budget-- <= 0 || depth > 80 || t > MAX_T || !o.raw || o.raw['11'] === '1') return;
     const dur = rawNum(o, '10', 0), e = rawNum(o, '30', 0), rate = rawNum(o, '85', 2), g = rawNum(o, '51', 0);
     const c = colorTriggerInfo(o);
-    if (c) { push(ev.chan, c.chan, { t, dur: c.dur, to: [c.r, c.g, c.b, c.a] }); return; }
+    if (c) { push(ev.chan, c.chan, { t, dur: c.dur, to: [c.r, c.g, c.b, c.a], blend: c.blend, player: c.player, copy: c.copy }); return; }
     switch (o.id) {
       case 1006:
         if (o.raw['48'] === '1') return;                         // HSV pulses are not simulated
@@ -2380,7 +2468,8 @@ function buildTimeline() {
   for (const arr of [ev.zoom, ev.coff, ev.crot, ev.shock, ev.stops]) arr.sort(byT);
   let ang = 0;
   for (const e of ev.crot) { ang = e.add ? ang + e.deg : e.deg; e.to = [ang]; }          // "Add" stacks on the previous rotation
-  const maxX = Math.max(600, ...level.objs.map(o => o.x)) + 300;
+  let maxX = 600; for (const o of level.objs) if (o.x > maxX) maxX = o.x;          // (a loop: spreading 300,000 objects into Math.max overflows the stack)
+  maxX += 300;
   const hasShaders = ev.sh.size > 0 || ev.shock.length > 0;
   const hasCamera = ev.zoom.length + ev.coff.length + ev.crot.length > 0;
   return { tOf, speedAt, ev, first, maxX, hasShaders, hasCamera };
@@ -2399,6 +2488,56 @@ function foldVec(evs, T, start) {
   for (const e of evs) {
     if (e.t > T) break;
     from = at(e.t); to = e.to; t0 = e.t; dur = e.dur; ez = e.e || 0; rate = e.rate || 2;
+  }
+  return at(T);
+}
+// ---- colour channels that copy another channel (header or Colour trigger), the player's colours, and hue/saturation/brightness ----
+const PLAYER_COL = { 1: [125, 255, 0], 2: [0, 255, 255] };
+function hsvApply(c, h) {
+  if (!h) return [c[0], c[1], c[2]];
+  const r = c[0] / 255, g = c[1] / 255, b = c[2] / 255, mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let hue = 0;
+  if (d > 0) hue = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  hue = ((hue * 60 + h.h) % 360 + 360) % 360;
+  let s = mx === 0 ? 0 : d / mx, v = mx;
+  s = clampN(h.sAdd ? s + h.s : s * h.s, 0, 1); v = clampN(h.vAdd ? v + h.v : v * h.v, 0, 1);
+  const cc = v * s, x = cc * (1 - Math.abs((hue / 60) % 2 - 1)), m = v - cc;
+  const [r1, g1, b1] = hue < 60 ? [cc, x, 0] : hue < 120 ? [x, cc, 0] : hue < 180 ? [0, cc, x] : hue < 240 ? [0, x, cc] : hue < 300 ? [x, 0, cc] : [cc, 0, x];
+  return [(r1 + m) * 255, (g1 + m) * 255, (b1 + m) * 255];
+}
+function linkedColor(ev, link, alpha, tt, depth) {                   // the colour a copying channel / trigger shows at time tt
+  if (link.player) return [...PLAYER_COL[link.player], alpha];
+  const s = chanColorAt(ev, link.copy.id, tt, depth + 1), rgb = hsvApply(s, link.copy.hsv);
+  return [rgb[0], rgb[1], rgb[2], link.copy.op ? s[3] : alpha];
+}
+function headerColor(ev, id, tt, depth) {
+  const ch = level.channels.get(id);
+  if (!ch) return [255, 255, 255, 1];
+  if ((ch.player || ch.copy) && depth < 6) return linkedColor(ev, ch, ch.a, tt, depth);
+  return [ch.r, ch.g, ch.b, ch.a === undefined ? 1 : ch.a];
+}
+let colMemo = null, colMemoT = 0;                                  // channel colours already worked out for the position being drawn
+function chanColorAt(ev, id, tt, depth) {
+  if (id === 1010) return [0, 0, 0, 1];
+  if (id === 1011) return [255, 255, 255, 1];
+  if (depth > 6) return [255, 255, 255, 1];
+  const memo = colMemo && tt === colMemoT;
+  if (memo && colMemo.has(id)) return colMemo.get(id);
+  const base = headerColor(ev, id, tt, depth), evs = ev.chan.get(id);
+  const v = evs ? foldChan(ev, evs, tt, base, depth) : base;
+  if (memo) colMemo.set(id, v);
+  return v;
+}
+function foldChan(ev, evs, T, start, depth) {                       // like foldVec, but an event can target "whatever that other channel is right now"
+  let from = start, to = start, cur = null, t0 = -1e9, dur = 0, ez = 0, rate = 2;
+  const at = tt => {
+    const p = dur > 0 ? clampN((tt - t0) / dur, 0, 1) : 1, k = ease(ez, rate, p);
+    const tgt = cur && (cur.copy || cur.player) && depth < 6 ? linkedColor(ev, cur, cur.to[3], tt, depth) : to;
+    return from.map((f, i) => lerpN(f, tgt[i], k));
+  };
+  for (const e of evs) {
+    if (e.t > T) break;
+    from = at(e.t); to = e.to; cur = e; t0 = e.t; dur = e.dur; ez = e.e || 0; rate = e.rate || 2;
   }
   return at(T);
 }
@@ -2443,10 +2582,17 @@ function stateAt(X) {
   if (tl.cache && tl.cacheX === X) return tl.cache;
   const m = timelineModel(), T = m.tOf(X), ev = m.ev;
   const channels = new Map();
+  colMemo = new Map(); colMemoT = T;
   for (const [id, evs] of ev.chan) {
-    const base = level.channels.get(id) || { r: 255, g: 255, b: 255, a: 1 };
-    const v = foldVec(evs, T, [base.r, base.g, base.b, base.a === undefined ? 1 : base.a]);
-    channels.set(id, { r: v[0], g: v[1], b: v[2], a: v[3] });
+    const v = chanColorAt(ev, id, T, 0), hc = level.channels.get(id);
+    let blend = !!(hc && hc.blend);
+    for (const e of evs) { if (e.t > T) break; blend = !!e.blend; }  // a Colour trigger switches blending on or off for its channel
+    channels.set(id, { r: v[0], g: v[1], b: v[2], a: v[3], blend });
+  }
+  for (const [id, hc] of level.channels) {                           // header channels that copy another channel or the player's colour
+    if (channels.has(id) || !(hc.copy || hc.player)) continue;
+    const v = chanColorAt(ev, id, T, 0);
+    channels.set(id, { r: v[0], g: v[1], b: v[2], a: v[3], blend: !!hc.blend });
   }
   for (const [id, evs] of (previewOn() ? ev.pulseC : [])) {                       // channel pulses flash over whatever the colour is right now
     let cur = channels.get(id) || level.channels.get(id);
@@ -2508,8 +2654,10 @@ chan = function (id) {
   return stateAt(tlPos()).channels.get(id) || level.channels.get(id);
 };
 let curPulse = null;                                         // pulse on the group of the object being drawn (timeline)
+let lastBlend = false;                                               // the channel just looked up draws additively (blending)
 function channelHexP(id, kind) {
   const ch = chan(id);
+  lastBlend = !!(ch && ch.blend);
   if (!ch) return 'ffffff';
   let r = ch.r, g = ch.g, b = ch.b;
   const p = curPulse;
@@ -2567,12 +2715,24 @@ renderEdit = function () {
 
 // anything that changes the objects invalidates the timeline
 const _afterEditTl = afterEdit;
-afterEdit = function (structural) { tl.dirty = true; _afterEditTl(structural); };
+// ...but only when a trigger (or an object in a group) was added, removed or moved: rebuilding the timeline of a 300,000-object level takes
+// over 100 ms, and moving a plain block cannot change it
+function timelineSignature() {
+  let h = 0, n = 0;
+  for (const o of level.objs) {
+    if (o.cls === 'trigger' || o.groups) { n++; h = (Math.imul(h, 31) + Math.round(o.x * 8) + Math.imul(Math.round(o.y * 8), 7) + o.id) | 0; }
+  }
+  return n + ':' + h;
+}
+afterEdit = function (structural) {
+  if (level) { const sig = timelineSignature(); if (sig !== tl.sig) { tl.sig = sig; tl.dirty = true; } } else tl.dirty = true;
+  _afterEditTl(structural);
+};
 const _loadFromTextTl = loadFromText;
 loadFromText = async function (raw, name) {
   tl.dirty = true; tl.cacheX = null;
   await _loadFromTextTl(raw, name);
-  tl.dirty = true; tl.cacheX = null;
+  tl.dirty = true; tl.cacheX = null; tl.sig = level ? timelineSignature() : null;
   syncTimeline(true);
   draw();
 };
@@ -2883,6 +3043,12 @@ function objMatrix(o, k) {
 // default colour channels per object, read from the game's own setup code (assets/coldefaults.json: id -> [main channel, detail channel]); only the built-in channels 1000+ are used
 let CDEF = {};
 fetch('assets/coldefaults.json').then(r => r.json()).then(j => { CDEF = j; if (typeof draw === 'function') draw(); }).catch(() => { });
+// a sprite whose colour channel has blending on is added to what is behind it instead of covering it
+const _paintSpriteBlend = paintSprite;
+paintSprite = function (img, fi, o, sx, sy, dim) {
+  if (typeof lastBlend !== 'undefined' && lastBlend) { ctx.save(); ctx.globalCompositeOperation = 'lighter'; try { _paintSpriteBlend(img, fi, o, sx, sy, dim); } finally { ctx.restore(); } lastBlend = false; }
+  else _paintSpriteBlend(img, fi, o, sx, sy, dim);
+};
 function defaultColFor(o) { const c = CDEF[o.id]; if (c && c[1]) return c[1]; return /^black/i.test(ID_FRAMES[o.id] || '') ? 1010 : 0; }
 // ---- sprites stored as one quarter: the sprite offset points at a corner of the object, so the full shape is that quarter mirrored ----
 function isQuarterFrame(fi) {
@@ -4437,8 +4603,8 @@ function goptOverlay() {
   rp.layerL.onclick = goLayer(() => -1); rp.layerL2.onclick = goLayer(v => v - 1); rp.layerR.onclick = goLayer(v => v + 1);
   rp.paste.onclick = () => {
     if (!S.clip || !level) return;
-    const x0 = Math.min(...S.clip.map(c => c.x)), x1 = Math.max(...S.clip.map(c => c.x));
-    const y0 = Math.min(...S.clip.map(c => c.y)), y1 = Math.max(...S.clip.map(c => c.y));
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const c of S.clip) { if (c.x < x0) x0 = c.x; if (c.x > x1) x1 = c.x; if (c.y < y0) y0 = c.y; if (c.y > y1) y1 = c.y; }
     const dx = Math.round((view.cx - (x0 + x1) / 2) / 30) * 30, dy = Math.round((view.cy - (y0 + y1) / 2) / 30) * 30;
     const objs = S.clip.map(c => { const o = cloneObj(c); o.x = c.x + dx; o.y = c.y + dy; o.idx = level.nextIdx++; return o; });
     pushOp(opAdd(objs), objs);
