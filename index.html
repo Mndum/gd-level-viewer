@@ -4017,6 +4017,7 @@ const GOPT_LIST = [
   ['triggerBoxes', 'Draw Trigger Boxes', false, 'Draws the hitbox for touch triggered objects'],
   ['effectLines', 'Effect Lines', false, 'Vertical line for triggers where they are activated'],
   ['durationLines', 'Duration Lines', false, 'Horizontal line for triggers showing how long they are active'],
+  ['autoSave', 'Auto-Save', true, 'Saves the level in this browser every minute while it has unsaved edits (restore it from the start screen)'],
   ['linkControls', 'Link Controls', false, 'Enables option to link objects together in the editor. Linked objects are always selected and deleted together'],
   ['gridOnTop', 'Grid On Top', false, 'Shows the grid on top of objects in the editor'],
   ['hideBg', 'Hide Background', false, 'Hides the background in the editor']
@@ -4061,7 +4062,12 @@ const goptPlay = { trail: [], clicks: [], t: 0, prevPress: false };
   const _reset = playReset;
   playReset = function () { _reset(); goptPlay.trail.length = 0; goptPlay.t = 0; };
   const _die = playDie;
-  playDie = function () { if (GOPT.noclip) return; _die(); };
+  playDie = function () {
+    if (GOPT.noclip) return;
+    const was = play.dead;
+    _die();
+    if (!was && play.dead && !play.practice) deathRecord();
+  };
   const _hud = hudUpdate;
   hudUpdate = function () {
     _hud();
@@ -4096,6 +4102,56 @@ const goptPlay = { trail: [], clicks: [], t: 0, prevPress: false };
     _setSel(list, primary);
   };
 }
+
+// ---- Death Stats: how many deaths happened at each percent of the level (kept in this browser, per level) ----
+const DEATH_KEY = 'gdv_deaths';
+function deathLevelKey() { return (typeof meta !== 'undefined' && meta && meta.k2) || (typeof srcDoc !== 'undefined' && srcDoc && srcDoc.name) || 'level'; }
+function deathAll() { try { return JSON.parse(localStorage.getItem(DEATH_KEY) || '{}'); } catch (e) { return {}; } }
+function deathGet() { const a = deathAll()[deathLevelKey()]; return Array.isArray(a) && a.length === 100 ? a : new Array(100).fill(0); }
+function deathRecord() {
+  try {
+    const pct = Math.max(0, Math.min(99, Math.floor(Math.max(0, play.x) / timelineModel().maxX * 100)));
+    const all = deathAll(), k = deathLevelKey(), a = Array.isArray(all[k]) && all[k].length === 100 ? all[k] : new Array(100).fill(0);
+    a[pct]++; all[k] = a; localStorage.setItem(DEATH_KEY, JSON.stringify(all));
+  } catch (e) { /* storage may be unavailable */ }
+}
+function deathClear() { try { const all = deathAll(); delete all[deathLevelKey()]; localStorage.setItem(DEATH_KEY, JSON.stringify(all)); } catch (e) { } }
+
+// ---- Auto-Save: the level is kept in IndexedDB every minute while it has unsaved edits; the start screen offers to restore it ----
+const AUTOSAVE = {
+  db() {
+    return new Promise((res, rej) => {
+      try {
+        const r = indexedDB.open('gdv-autosave', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('s');
+        r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+      } catch (e) { rej(e); }
+    });
+  },
+  async put(rec) { const d = await this.db(); return new Promise((res, rej) => { const tx = d.transaction('s', 'readwrite'); tx.objectStore('s').put(rec, 'last'); tx.oncomplete = res; tx.onerror = () => rej(tx.error); }); },
+  async get() { const d = await this.db(); return new Promise((res, rej) => { const q = d.transaction('s').objectStore('s').get('last'); q.onsuccess = () => res(q.result || null); q.onerror = () => rej(q.error); }); },
+  async clear() { const d = await this.db(); return new Promise(res => { const tx = d.transaction('s', 'readwrite'); tx.objectStore('s').delete('last'); tx.oncomplete = res; }); },
+  last: 0
+};
+async function autoSaveNow() {
+  if (!GOPT.autoSave || typeof level === 'undefined' || !level || !level.edited || typeof buildSaveFile !== 'function') return false;
+  try {
+    const text = await buildSaveFile();
+    await AUTOSAVE.put({ name: (srcDoc && srcDoc.name) || 'level', kind: srcDoc ? srcDoc.kind : 'gdlvl', savedAt: Date.now(), text });
+    AUTOSAVE.last = Date.now(); return true;
+  } catch (e) { return false; }
+}
+setInterval(autoSaveNow, 60000);
+async function autoSaveButtons() {
+  let rec = null; try { rec = await AUTOSAVE.get(); } catch (e) { }
+  const empty = document.getElementById('empty');
+  if (!rec || !empty || document.getElementById('autoSaveEmptyBtn')) return;
+  const b = document.createElement('button'); b.className = 'gdbtn wide presetOpen'; b.id = 'autoSaveEmptyBtn';
+  b.textContent = 'Restore auto-save (' + rec.name.replace(/\.(gdlvl|gmd)$/i, '') + ', ' + new Date(rec.savedAt).toLocaleString() + ')';
+  b.onclick = async () => { await loadFromText(rec.text, rec.name); };
+  empty.appendChild(b);
+}
+setTimeout(autoSaveButtons, 700);
 
 // ---- drawing: overlays on top of the level ----
 function goptOverlay() {
@@ -4979,11 +5035,12 @@ function goptOverlay() {
       ['Save', 682, () => { if (typeof saveLevel === 'function') saveLevel(); }], ['Exit', 823, exitToStart]];
     for (const [t, y, fn] of items) nbtn(root, 'GJ_button_01', null, { cx: 960, cy: y, w: 660, h: 96 }, fn, t, 'gold', 64);
     const side = [['Settings', 'GJ_sSettingsIcon_001.png', 67, () => openOver(settingsDialog)], ['Export', 'GJ_sExportIcon_001.png', 175, () => { if (typeof saveLevel === 'function') saveLevel(); }],
-      ['Editor SFX', 'GJ_sSFXIcon_001.png', 282, null], ['Auto-Save', 'GJ_sSaveIcon_001.png', 390, null], ['Death Stats', 'GJ_sMarkerIcon_001.png', 498, null],
+      ['Editor SFX', 'GJ_sSFXIcon_001.png', 282, null], ['Auto-Save', 'GJ_sSaveIcon_001.png', 390, () => { goptSet('autoSave', !GOPT.autoSave); if (GOPT.autoSave) autoSaveNow(); open(pauseMenu); }], ['Death Stats', 'GJ_sMarkerIcon_001.png', 498, () => openOver(deathStatsDialog)],
       ['Options', 'GJ_sSettingsIcon_001.png', 823, () => openOver(advancedDialog)], ['Get Audio', 'GJ_sAudioDLIcon_001.png', 606, () => { close(); $('menu').classList.add('on'); }], ['Help', 'GJ_sHelpIcon_001.png', 715, () => window.open('https://store.steampowered.com/app/322170/Geometry_Dash/', '_blank')]];
     for (const [t, ic, y, fn] of side) {
       const b = nbtn(root, 'GJ_button_05', '5b6785', { cx: 1750, cy: y, w: 286, h: 92 }, fn, null);
       b.style.left = `calc(100% - ${(DW - 1750 + 143)} * var(--k))`; b.style.top = `calc(${y - 46} * var(--k))`;
+      if (t === 'Auto-Save' && !GOPT.autoSave) b.style.filter = 'brightness(.55) saturate(.5)';
       const lab = mk('img', 'a', b); lab.style.cssText = 'left:7%;top:20%;width:62%;height:60%;object-fit:contain;object-position:left center'; live(lab, () => textImg('big', t, Math.round(58 * A.S.k)));
       const ico = mk('img', 'a', b); ico.style.cssText = 'right:5%;top:12%;width:26%;height:76%;object-fit:contain'; live(ico, () => frameURL(ic));
     }
@@ -5009,6 +5066,21 @@ function goptOverlay() {
     if ($('empty')) $('empty').style.display = ''; else if (window.showPresetLevels) showPresetLevels();
   }
 
+  // ---------- Death Stats: a bar for every percent of the level, as tall as the deaths there ----------
+  function deathStatsDialog() {
+    const o = smallDialog(1300, 760, 'Death Stats', 80);
+    const a = deathGet(), total = a.reduce((s, v) => s + v, 0), max = Math.max(1, ...a);
+    const top = a.indexOf(Math.max(...a));
+    txt(root, 'big', total ? 'Deaths: ' + total + '  ·  most at ' + top + '% (' + a[top] + ')' : 'No deaths yet. Playtest the level to fill this in.', 40, o(650, 190, 1200, 60));
+    const cv = mk('canvas', 'a', root); put(cv, o(650, 410, 1100, 360));
+    cv.width = 1100; cv.height = 360; cv.style.pointerEvents = 'none';
+    const g = cv.getContext('2d'); g.fillStyle = 'rgba(0,0,0,.45)'; g.fillRect(0, 0, 1100, 360);
+    const w = 1100 / 100;
+    for (let i = 0; i < 100; i++) { const h = Math.round(a[i] / max * 330); g.fillStyle = i === top && total ? '#ffd24a' : '#ff5a4a'; g.fillRect(i * w + 1, 345 - h, w - 2, h); }
+    g.fillStyle = '#fff'; g.font = '22px sans-serif'; for (const p of [0, 25, 50, 75, 100]) g.fillText(p + '%', Math.min(1070, p * w), 358);
+    nbtn(root, 'GJ_button_06', null, o(330, 680, 250, 90), () => { deathClear(); open(current); }, 'Clear', 'gold', 54);
+    nbtn(root, 'GJ_button_01', null, o(790, 680, 190, 90), back, 'OK', 'gold', 60);
+  }
   // ---------- level settings ----------
   const SPEED_VALUES = [1, 0, 2, 3, 4];
   const SPEED_FRAMES = ['boost_01_001.png', 'boost_02_001.png', 'boost_03_001.png', 'boost_04_001.png', 'boost_05_001.png'];
