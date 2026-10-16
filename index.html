@@ -1215,10 +1215,11 @@ $('assets').onchange = async e => {
   } catch (err) { showError(err); }
 };
 
-// ---------- song: played from YOUR copy (the game's own download folder), never streamed from Newgrounds ----------
-// Newgrounds blocks hotlinking, and the game itself keeps every song it downloads as <songID>.mp3/.ogg in
-// %LOCALAPPDATA%\GeometryDash. The page reads it from there (folder chosen once), or from a file you load.
-const DEFAULT_SONG_SERVICE = 'https://gd-song-service.monochromdum.workers.dev';   // name/artist lookup only
+// ---------- song: played from your copy (the game's own download folder) if present, else streamed via the worker ----------
+// The game keeps every song it downloads as <songID>.mp3/.ogg in %LOCALAPPDATA%\GeometryDash. The page reads it
+// from there (folder chosen once), or from a file you load. Without a local copy it streams from the worker's
+// /audio/<id> endpoint, which relays the Newgrounds file.
+const DEFAULT_SONG_SERVICE = 'https://gd-song-service.monochromdum.workers.dev';   // song info + audio relay
 const SERVICE_KEY = 'gd-level-viewer.songService';
 const song = { id: 0, audio: null, fileUrl: null, info: null, token: 0, label: '' };
 let songFolder = null;                       // handle to the game's save folder
@@ -1297,11 +1298,9 @@ async function loadSong(id) {
     attachAudio(song.fileUrl, (info && info.name) || file.name);
     setSongStatus(`ready: ${nice} (from your game folder) - press the music button to play`);
   } else {
-    song.label = (info && info.name) || ('Song ' + id);
-    updateSongChip();
-    setSongStatus(songFolder
-      ? `${nice} is not in your game folder yet. Open the level once in Geometry Dash so it downloads the song, or load the audio file yourself.`
-      : `${nice}. Choose your Geometry Dash save folder below so the page can play it, or load the audio file yourself.`);
+    // no local copy: stream it through the Cloudflare worker's /audio proxy (it adds the Referer Newgrounds wants)
+    attachAudio((info && info.stream) || `${songService()}/audio/${id}`, (info && info.name) || ('Song ' + id));
+    setSongStatus(`ready: ${nice} (streaming) - press the music button to play`);
   }
 }
 function toggleSong() {
