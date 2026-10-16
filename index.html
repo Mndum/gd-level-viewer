@@ -3064,14 +3064,14 @@ function drawChildren(o, sx, sy, dim, phase) {
     const fi = atlas.frames.get(c[0]);
     if (!fi) continue;
     const detail = c[0].includes('_color_');
-    const hex = channelHexP(detail ? (o.col2 || defaultColFor(o)) : (o.col || (typeof defaultMainFor === 'function' ? defaultMainFor(o) : 0)), detail ? 'detail' : 'main');
+    const hex = channelHexP(detail ? (o.col2 || defaultColFor(o) || (blackNamed(o) && /^plank_01_slope/.test(c[0]) ? 1010 : 0)) : (o.col || (/^plank_01_slope/.test(c[0]) ? defaultMainFor(o) : defaultChildFor(o))), detail ? 'detail' : 'main');
     const img = tintedFrame(fi, hex);
     if (!img) continue;
     const ox = c[1] * o.sx * (o.flipX ? -1 : 1), oy = c[2] * o.sy * (o.flipY ? -1 : 1);
     const px = sx + (ox * ca - oy * sa) * k, py = sy - (ox * sa + oy * ca) * k;
     const oc = Object.create(o);
     oc.rot = o.rot + c[4] * ((o.flipX ? -1 : 1) * (o.flipY ? -1 : 1));
-    if (c[5]) lastBlend = true;
+    if (c[5] && !/^plank_01_slope/.test(c[0])) lastBlend = true;      // the gradient planks fade out normally (the game shows the black ones black)
     paintSprite(img, fi, oc, px, py, dim);
   }
 }
@@ -3095,7 +3095,7 @@ function drawFrameImage(img, fi, Q, W, H) {
 // The grid-patterned slopes are the window-grid triangle with the white slope outline drawn over it.
 // 289 and 291 are the cornerless versions of the same grid-patterned slopes (the table only had their outline)
 Object.assign(ID_FRAMES, { 289: 'triangle_a_02_001.png', 291: 'triangle_a_04_001.png' });
-const EXTRA_LAYERS = { 1743: 'blockOutline_14_001.png', 1744: 'blockOutline_15_001.png', 289: 'blockOutline_14_001.png', 291: 'blockOutline_15_001.png' };
+const EXTRA_LAYERS = { 1743: 'blockOutline_14_001.png', 1744: 'blockOutline_15_001.png', 1745: 'blockOutline_14_001.png', 1746: 'blockOutline_15_001.png', 1747: 'blockOutline_14_001.png', 1748: 'blockOutline_15_001.png', 1749: 'blockOutline_14_001.png', 1750: 'blockOutline_15_001.png', 289: 'blockOutline_14_001.png', 291: 'blockOutline_15_001.png' };
 // second sprites the game adds to these objects (decoded from GameObject::addColorSprite in the exe): the 2.2 letter pieces and the light-square family
 Object.assign(EXTRA_LAYERS, {"263":"lightsquare_04_05_color_001.png","264":"lightsquare_04_05_color_001.png","265":"lightsquare_04_05_color_001.png","267":"lightsquare_04_05_color_001.png","268":"lightsquare_04_05_color_001.png","2732":"gdh_01_1_05_2_001.png","2735":"gdh_01_1_05b_2_001.png","2738":"gdh_01_1_06_2_001.png","2741":"gdh_01_1_06b_2_001.png","2744":"gdh_01_1_07_2_001.png","2745":"gdh_01_1_07b_2_001.png","2746":"gdh_01_1_08_2_001.png","2747":"gdh_01_1_08b_2_001.png","2748":"gdh_01_1_09_2_001.png","2749":"gdh_01_1_09b_2_001.png","2750":"gdh_01_1_10_2_001.png","2751":"gdh_01_1_10b_2_001.png","2752":"gdh_01_1_11_2_001.png","2755":"gdh_01_1_11b_2_001.png","2758":"gdh_01_1_12_2_001.png","2761":"gdh_01_1_12b_2_001.png","2764":"gdh_01_2_01_2_001.png","2765":"gdh_01_2_01b_2_001.png","2766":"gdh_01_2_02_2_001.png","2767":"gdh_01_2_02b_2_001.png","2768":"gdh_01_2_03_2_001.png","2769":"gdh_01_2_03b_2_001.png","2770":"gdh_01_2_04_2_001.png","2773":"gdh_01_2_04b_2_001.png","2776":"gdh_01_2_05_2_001.png","2779":"gdh_01_2_05b_2_001.png","2782":"gdh_01_2_06_2_001.png","2785":"gdh_01_2_06b_2_001.png","2796":"gdh_01_2_11_2_001.png","2799":"gdh_01_2_11b_2_001.png","2802":"gdh_01_2_12_2_001.png","2805":"gdh_01_2_12b_2_001.png","2838":"gdh_02_1_2_001.png","2839":"gdh_02_2_2_001.png","2840":"gdh_02_3_2_001.png","2841":"gdh_02_4_2_001.png","2842":"gdh_02_1b_2_001.png","2843":"gdh_02_2b_2_001.png","2844":"gdh_02_3b_2_001.png","2845":"gdh_02_4b_2_001.png","2846":"gdh_02_1c_2_001.png","2847":"gdh_02_2c_2_001.png","2848":"gdh_02_3c_2_001.png","2849":"gdh_02_4c_2_001.png"});
 // more detail-colour sprites from the same function (GameObject::addColorSprite, jump target 0x2ac017): the Mechanical Colored slopes, the light triangles, link blocks, ...
@@ -3103,8 +3103,12 @@ Object.assign(EXTRA_LAYERS, {"331":"lighttriangle_01_02_color_001.png","333":"li
 // objects the game calls Black ... (Wavy Black Slope, Black Gradient Slope, ...) are black unless a colour is set
 let OBJ_NAMES = {};
 fetch('assets/objects.json').then(r => r.json()).then(j => { OBJ_NAMES = j; if (typeof draw === 'function') draw(); }).catch(() => { });
+// the plain sprite of a slope that is only an outline (blockOutline_*) is white; the black fill is its child sprite
+function blackNamed(o) { return OBJ_NAMES[o.id] && /\bblack\b/i.test(OBJ_NAMES[o.id]) && !/colou?red|pulsing|glow/i.test(OBJ_NAMES[o.id]); }
+function defaultChildFor(o) { const c = CDEF[o.id]; if (c && c[0]) return c[0]; return blackNamed(o) ? 1010 : defaultMainFor(o); }
 function defaultMainFor(o) {
   const c = CDEF[o.id]; if (c && c[0]) return c[0];
+  if (/^blockOutline/.test(ID_FRAMES[o.id] || '')) return 0;
   if (OBJ_NAMES[o.id] && /\bblack\b/i.test(OBJ_NAMES[o.id]) && !/colou?red|pulsing|glow/i.test(OBJ_NAMES[o.id])) return 1010;
   const n = ID_FRAMES[o.id] || '';
   if (/^lighttriangle_01_/.test(n)) return 1010;                    // the plain Black Slope
