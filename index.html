@@ -3795,7 +3795,7 @@ function stopPlay() {
   function opRaw(objs, apply, name) {
     const before = objs.map(rawSnap); let after = null;
     const put = snaps => { for (const s of snaps) { s.o.raw = Object.assign({}, s.raw); s.o.fields = s.fields.slice(); syncDerived(s.o); s.o.dirty = true; } if (typeof tl !== 'undefined') tl.dirty = true; };
-    return { name, structural: false,
+    return { name, structural: true,
       do() { if (after) return put(after); for (const o of objs) { apply(o); syncDerived(o); o.dirty = true; } after = objs.map(rawSnap); if (typeof tl !== 'undefined') tl.dirty = true; },
       undo() { put(before); } };
   }
@@ -3803,6 +3803,8 @@ function stopPlay() {
     const sel = selList(); if (!sel.length || !S.state) return;
     pushOp(opRaw(sel, o => { for (const k of keys(o)) setKey(o, k, S.state[k]); }, name));
   };
+  rp.group.onclick = () => { if (selList().length && window.dialogsApi) dialogsApi.openEditGroup(); };
+  rp.object.onclick = () => { if (selList().length && window.dialogsApi) dialogsApi.openEditObject(); };
   rp.cvals.onclick = () => {
     const o = view.selected || selList()[0]; if (!o) return;
     S.state = Object.assign({}, o.raw); refresh();
@@ -3857,7 +3859,7 @@ function stopPlay() {
       else if (r.b && r.apply && r.b._lastU !== u) { r.b._lastU = u; r.apply(u); }
     }
     const sel = (typeof selList === 'function' ? selList() : []).length;
-    for (const k of ['copy', 'dup', 'desel', 'cvals']) rp[k].classList.toggle('dim', !sel);
+    for (const k of ['copy', 'dup', 'desel', 'cvals', 'group', 'object']) rp[k].classList.toggle('dim', !sel);
     rp.paste.classList.toggle('dim', !S.clip);
     rp.pstate.classList.toggle('dim', !S.state); rp.pcolor.classList.toggle('dim', !S.state);
     top.trash.classList.toggle('off', !sel);
@@ -3887,7 +3889,7 @@ function stopPlay() {
   draw = function () { _draw(); try { syncSlider(); } catch (e) { /* cosmetic */ } };
   setTimeout(() => { layout(); applyToggles(); setShellTab('build'); }, 0);
   setInterval(refresh, 700);
-  window.shellApi = { refresh, layout, setShellTab, S, paintBuild, frameURL, baseURL, textURL, cropURL };
+  window.shellApi = { editRaw: (objs, fn, name) => pushOp(opRaw(objs, fn, name)), setKey, selList, refresh, layout, setShellTab, S, paintBuild, frameURL, baseURL, textURL, cropURL };
 })();
 </script>
 
@@ -4187,6 +4189,42 @@ function stopPlay() {
     nbtn(root, 'GJ_button_01', null, o(600, 700, 190, 90), back, 'OK', 'gold', 60);
   }
 
+
+  // ---------- Edit Group / Edit Object: change the properties of the selected objects ----------
+  const selObjs = () => (A.selList ? A.selList() : []);
+  const rawNumOf = (o, k, d) => { const v = o.raw && o.raw[k]; return v === undefined || v === '' || isNaN(Number(v)) ? d : Number(v); };
+  function numRow(o, y, label, getter, setter, step) {
+    txt(root, 'big', label, 44, o(250, y, 380, 60), 'left');
+    nbtn(root, 'GJ_button_04', null, o(560, y, 70, 70), () => { setter(getter() - (step || 1)); open(current); }, '-', 'big', 56);
+    txt(root, 'gold', String(getter()), 56, o(690, y, 150, 70));
+    nbtn(root, 'GJ_button_04', null, o(820, y, 70, 70), () => { setter(getter() + (step || 1)); open(current); }, '+', 'big', 56);
+  }
+  const groupList = o => (o.raw && o.raw['57'] ? String(o.raw['57']).split('.').map(Number).filter(n => n > 0) : []);
+  let pendingGroup = 1;
+  function editGroupDialog() {
+    const o = smallDialog(1000, 640, 'Edit Group', 80);
+    const p = selObjs()[selObjs().length - 1];
+    const list = p ? groupList(p) : [];
+    txt(root, 'big', list.length ? 'Groups: ' + list.join(', ') : 'No groups', 44, o(500, 190, 900, 60));
+    numRow(o, 300, 'Group:', () => pendingGroup, v => { pendingGroup = Math.max(1, Math.min(9999, v)); });
+    const apply = fn => () => { A.editRaw(selObjs(), ob => { const gs = fn(groupList(ob)); A.setKey(ob, '57', gs.length ? gs.join('.') : undefined); }, 'groups'); open(current); };
+    nbtn(root, 'GJ_button_01', null, o(180, 430, 230, 90), apply(g => g.includes(pendingGroup) ? g : g.concat(pendingGroup)), 'Add', 'gold', 54);
+    nbtn(root, 'GJ_button_06', null, o(430, 430, 250, 90), apply(g => g.filter(n => n !== pendingGroup)), 'Remove', 'gold', 54);
+    nbtn(root, 'GJ_button_04', null, o(700, 430, 230, 90), apply(() => []), 'Clear', 'gold', 54);
+    nbtn(root, 'GJ_button_01', null, o(500, 570, 190, 90), close, 'OK', 'gold', 60);
+  }
+  const keyRow = (o, y, label, key, def, lo, hi) => numRow(o, y, label, () => rawNumOf(selObjs()[selObjs().length - 1] || {}, key, def),
+    v => A.editRaw(selObjs(), ob => A.setKey(ob, key, Math.max(lo, Math.min(hi, v))), label), 1);
+  function editObjectDialog() {
+    const o = smallDialog(1000, 720, 'Edit Object', 80);
+    const p = selObjs()[selObjs().length - 1];
+    keyRow(o, 190, 'Z Layer:', '24', p && typeof defaultZLayer === 'function' ? defaultZLayer(p.id) : 0, -5, 11);
+    keyRow(o, 280, 'Z Order:', '25', 0, -100, 100);
+    keyRow(o, 370, 'Main colour:', '21', 0, 0, 999);
+    keyRow(o, 460, 'Detail colour:', '22', 0, 0, 999);
+    keyRow(o, 550, 'Editor layer:', '20', 0, 0, 9999);
+    nbtn(root, 'GJ_button_01', null, o(500, 650, 190, 90), close, 'OK', 'gold', 60);
+  }
   // ---------- entry points ----------
   function openPause() { if (!level) return; current = pauseMenu; stack.length = 0; open(pauseMenu); }
   function openSettings() { if (!level) return; stack.length = 0; current = settingsDialog; open(settingsDialog); }
@@ -4195,7 +4233,9 @@ function stopPlay() {
     e.stopImmediatePropagation(); e.preventDefault();
     if (root.classList.contains('on')) { if (stack.length) back(); else close(); } else openPause();
   }, true);
-  window.dialogsApi = { openPause, openSettings, close, hdrGet, hdrSet };
+  function openEditGroup() { if (!level || !selObjs().length) return; stack.length = 0; current = editGroupDialog; open(editGroupDialog); }
+  function openEditObject() { if (!level || !selObjs().length) return; stack.length = 0; current = editObjectDialog; open(editObjectDialog); }
+  window.dialogsApi = { openEditGroup, openEditObject, openPause, openSettings, close, hdrGet, hdrSet };
 })();
 </script>
 <script>
