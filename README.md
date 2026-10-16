@@ -3,7 +3,7 @@
 View and edit Geometry Dash level files in your browser, in the style of the in-game editor.
 
 - Opens `.gdlvl` and `.gmd` level files (drop one on the page, or Menu → Open level).
-- Draws the level with the real editor sprites, read from **your own** copy of the game.
+- Draws the level with the real editor sprites. Don't have the game? [Get Geometry Dash on Steam](https://store.steampowered.com/app/322170/Geometry_Dash/).
 - Build / Edit / Delete bar: the Build tab lists the object types in the level, the Edit tab shows
   the selected object (position, rotation, scale, colour channels, z layer, groups).
 - **Editing:** select objects (Shift-click for several), drag them in Move mode with grid snapping,
@@ -17,9 +17,8 @@ View and edit Geometry Dash level files in your browser, in the style of the in-
 ## Using it
 
 1. Open the page in Chrome or Edge.
-2. Menu → **Choose Resources folder…** and pick your Geometry Dash `Resources` folder
-   (for Steam: `steamapps/common/Geometry Dash/Resources`). The browser remembers the choice.
-   Other browsers can use the plain folder picker, which cannot be remembered.
+2. Sprites load automatically. Optional: Menu -> **Use my own game folder instead...** to read them from your installed game
+   (Chrome and Edge will not open folders under `Program Files`).
 3. Open a level.
 
 Everything happens in your browser. Your level and the game files are not uploaded anywhere.
@@ -37,8 +36,8 @@ Newgrounds does not allow other sites to stream its audio, so this page never do
   You can run your own copy and change the address in Menu → Song.
 ## What is and isn't in this repository
 
-- This repository contains **no game assets**: no sprites, fonts, audio or shader code from
-  Geometry Dash. Sprites are read from the user's own installation at runtime.
+- ssets/ contains Geometry Dash's sprite sheets and fonts, included with RobTop Games' permission.
+  No audio or shader code from the game is included.
 - `index.html` includes a table that maps object IDs to sprite file names, which is how the page
   knows which sprite to draw for an object.
 - The effect shader is original code.

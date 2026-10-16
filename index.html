@@ -185,11 +185,11 @@
         <label class="gdbtn wide" style="cursor:pointer" title="Pick your Geometry Dash Resources folder; read locally in your browser">Pick folder (other browsers)&hellip; <input id="assets" type="file" webkitdirectory multiple hidden></label>
       </div>
       <div class="menuRow">
-        <button class="gdbtn wide green" id="btnFolder" title="Choose your Geometry Dash Resources folder once; this browser remembers it">Choose Resources folder&hellip;</button>
+        <button class="gdbtn wide green" id="btnFolder" title="Choose your Geometry Dash Resources folder once; this browser remembers it">Use my own game folder instead&hellip;</button>
         <button class="gdbtn wide" id="btnReconnect" hidden>Reconnect saved folder</button>
       </div>
       <div class="small" id="assetStatus">no sprites loaded</div>
-      <div class="small">Chrome and Edge will not let a website open folders under <b>Program Files</b> (they say "contains system files"), and the game usually lives there. If the picker refuses your Resources folder, copy the files named <b>GJ_GameSheet*</b>, <b>PixelSheet_01*</b>, <b>GJ_ParticleSheet*</b>, <b>FireSheet_01*</b> and <b>bigFont*</b> (the <b>-uhd</b> and <b>-hd</b> ones) into any other folder on your PC, and choose that folder here. Or use &quot;Pick folder (other browsers)&quot;, which has no such limit but cannot remember the folder.</div>
+      <div class="small">Optional: sprites are included with this page, so you do not need to pick anything. If you prefer your own copy, note that Chrome and Edge will not let a website open folders under <b>Program Files</b> (they say "contains system files"), and the game usually lives there. If the picker refuses your Resources folder, copy the files named <b>GJ_GameSheet*</b>, <b>PixelSheet_01*</b>, <b>GJ_ParticleSheet*</b>, <b>FireSheet_01*</b> and <b>bigFont*</b> (the <b>-uhd</b> and <b>-hd</b> ones) into any other folder on your PC, and choose that folder here. Or use &quot;Pick folder (other browsers)&quot;, which has no such limit but cannot remember the folder.</div>
       <div class="menuRow">
         <span class="small">Asset quality</span>
         <label class="chk"><input type="radio" name="aq" value="uhd" checked> UHD</label>
@@ -231,7 +231,7 @@
         </div>
         <div class="menuRow"><button class="gdbtn wide" id="fxToggle">Shader effects</button><button class="gdbtn wide green" id="fxGallery">Shader gallery</button></div>
       </div>
-      <div class="small" style="margin-top:14px">Unofficial fan tool. Not affiliated with or endorsed by RobTop Games. Geometry Dash and its art belong to RobTop Games; this page contains none of it and reads sprites from your own copy.</div>
+      <div class="small" style="margin-top:14px">Unofficial fan tool. Not affiliated with or endorsed by RobTop Games. Geometry Dash and its art belong to RobTop Games; the sprite sheets and fonts hosted with this page are included with his permission. <a href="https://store.steampowered.com/app/322170/Geometry_Dash/" target="_blank" rel="noopener" style="color:var(--gold)">Get Geometry Dash on Steam</a>.</div>
       <div class="menuRow" style="justify-content:center;margin-top:16px"><button class="gdbtn wide green" id="menuClose">Resume</button></div>
     </div>
   </div>
@@ -1159,7 +1159,7 @@ async function chooseFolder() {
   try {
     const h = await window.showDirectoryPicker({ id: 'gd-resources', mode: 'read' });
     await loadFromFolder(h);
-    folderHandle = h;
+    folderHandle = h; siteAssets = false;
     try { await kvSet('gdFolder', h); } catch (e) { /* remembering is a convenience */ }
     $('btnReconnect').hidden = true;
   } catch (e) {
@@ -1198,6 +1198,7 @@ async function reloadAssetsForQuality() {
   try {
     if (folderHandle && (await folderHandle.queryPermission({ mode: 'read' })) === 'granted') await loadFromFolder(folderHandle);
     else if (lastAssetFiles) await loadAssets(lastAssetFiles);
+    else if (siteAssets && await loadAssetsFromSite()) { /* hosted sprites reloaded at the new quality */ }
     else { $('aqNote').textContent = 'load your Resources folder first'; return; }
     $('aqNote').textContent = assetQuality.toUpperCase() + ' sprites active';
   } catch (e) { showError(e); }
@@ -1355,6 +1356,38 @@ $('btnSongReconnect').onclick = reconnectSongFolder;
 const _autoLoadAssetsOnly = autoLoadAssets;
 autoLoadAssets = async function () { await autoLoadSongFolder(); return _autoLoadAssetsOnly(); };
 
+// ---------- sprites hosted next to this page (included with RobTop's permission) ----------
+let siteAssets = false;
+async function loadAssetsFromSite() {
+  const qs = assetQuality === 'uhd' ? ['uhd', 'hd'] : ['hd', 'uhd'];
+  const files = [];
+  setAssetStatus(`downloading ${assetQuality.toUpperCase()} sprites…`);
+  try {
+    for (const stem of [...SHEET_STEMS, 'bigFont']) {
+      const ext = stem === 'bigFont' ? 'fnt' : 'plist';
+      for (const q of qs) {
+        const base = `${stem}-${q}`;
+        const [a, b] = await Promise.all([fetch(`assets/${base}.${ext}`), fetch(`assets/${base}.png`)]);
+        if (a.ok && b.ok) {
+          files.push(new File([await a.blob()], `${base}.${ext}`), new File([await b.blob()], `${base}.png`));
+          break;
+        }
+      }
+    }
+  } catch (e) { return false; }
+  if (!files.length) return false;
+  siteAssets = true;
+  await loadAssets(files);
+  return true;
+}
+const _autoWithSong = autoLoadAssets;
+autoLoadAssets = async function () {
+  // a folder you chose earlier wins; otherwise use the sprites hosted with this page
+  let chosen = false;
+  try { chosen = !!(await kvGet('gdFolder')); } catch (e) { /* ignore */ }
+  if (!chosen && await loadAssetsFromSite()) { await autoLoadSongFolder(); return; }
+  return _autoWithSong();
+};
 $('songService').value = songService();
 $('songServiceSave').onclick = () => {
   try {
@@ -1827,7 +1860,7 @@ updateEditUi();
     '<div class="label" style="font-size:24px;margin-bottom:6px">Level Viewer</div>' +
     '<div class="small" style="font-size:14px;margin-bottom:14px">View and edit Geometry Dash level files with the editor\'s own look.<br>Open a <b>.gdlvl</b> or <b>.gmd</b> file, or drop one on this page.</div>' +
     '<button class="gdbtn wide green" id="emptyOpen">Open a level&hellip;</button>' +
-    '<div class="small" style="margin-top:14px">Sprites are read from <i>your own</i> copy of the game: Menu &rarr; Choose Resources folder.<br>Nothing from the game is included in this page or uploaded anywhere.</div>';
+    '<div class="small" style="margin-top:14px">Sprites load automatically: RobTop&#39;s sprite sheets are hosted with this page, with his permission.<br>Your level files never leave your browser.<br>Don&#39;t have the game? <a href=\"https://store.steampowered.com/app/322170/Geometry_Dash/\" target=\"_blank\" rel=\"noopener\" style=\"color:var(--gold)\">Get Geometry Dash on Steam</a>.</div>';
   $('stage').appendChild(el);
   $('emptyOpen').onclick = () => $('file').click();
   const css = document.createElement('style');
