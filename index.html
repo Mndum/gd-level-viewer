@@ -734,7 +734,7 @@ function draw() {
   let lineCol = 'rgba(61,220,151,.7)';
   if (opt.bg && level) {
     const gc = chan(1001), lc = chan(1002);
-    if (gc && gy < H) { ctx.fillStyle = `rgb(${Math.round(gc.r)},${Math.round(gc.g)},${Math.round(gc.b)})`; ctx.fillRect(0, Math.max(0, gy), W, H - Math.max(0, gy)); }
+    if (gc && gy < H) { ctx.fillStyle = `rgb(${Math.round(gc.r)},${Math.round(gc.g)},${Math.round(gc.b)})`; ctx.fillRect(0, Math.max(0, gy), W, H - Math.max(0, gy)); drawGroundPicture(W, H, gy); }
     if (lc) lineCol = `rgb(${Math.round(lc.r)},${Math.round(lc.g)},${Math.round(lc.b)})`;
   }
   ctx.strokeStyle = lineCol; ctx.lineWidth = 2;
@@ -2110,9 +2110,9 @@ function levelBgId() {
   const n = m ? Number(m[1]) : 1;
   return n >= 1 && n <= 59 ? n : 1;
 }
-async function fetchBgBlob(id) {
+async function fetchBgBlob(id, stem) {
   const nn = String(id).padStart(2, '0');
-  const names = (assetQuality === 'uhd' ? ['-uhd', '-hd', ''] : ['-hd', '-uhd', '']).map(q => `game_bg_${nn}_001${q}.png`);
+  const names = (assetQuality === 'uhd' ? ['-uhd', '-hd', ''] : ['-hd', '-uhd', '']).map(q => `${stem || 'game_bg_'}${nn}_001${q}.png`);
   if (typeof folderHandle !== 'undefined' && folderHandle) {
     try {
       if ((await folderHandle.queryPermission({ mode: 'read' })) === 'granted') {
@@ -2169,6 +2169,45 @@ function drawBgPicture(W, H) {
   let x0 = -((view.cx * 0.1 * (view.zoom || 1)) % size);
   if (x0 > 0) x0 -= size;
   for (let x = x0; x < W; x += size) ctx.drawImage(cv, Math.round(x), 0, size + 1, size);
+}
+// ---- ground picture: groundSquare_XX_001 chosen by kA7, tiled along the floor and tinted by the ground colour ----
+const grPic = { id: 0, img: null, loading: 0, tint: null, tintKey: '' };
+function levelGroundId() {
+  const m = level && /(?:^|,)kA7,(\d+)/.exec(level.header || '');
+  const n = m ? Number(m[1]) : 1;
+  return n >= 1 && n <= 22 ? n : 1;
+}
+function drawGroundPicture(W, H, gy) {
+  if (!level || gy >= H) return;
+  const id = levelGroundId();
+  if (!(grPic.id === id && grPic.img) && grPic.loading !== id) {
+    grPic.loading = id;
+    fetchBgBlob(id, 'groundSquare_').then(async blob => {
+      grPic.loading = 0; grPic.id = id; grPic.img = blob ? await createImageBitmap(blob) : null; grPic.tintKey = '';
+      if (grPic.img) draw();
+    }).catch(() => { grPic.loading = 0; grPic.id = id; });
+  }
+  if (!grPic.img) return;
+  const c = chan(1001) || { r: 255, g: 255, b: 255 };
+  const key = id + '|' + Math.round(c.r / 4) + '|' + Math.round(c.g / 4) + '|' + Math.round(c.b / 4) + '|' + assetQuality;
+  if (grPic.tintKey !== key) {
+    const S = 256, cv = grPic.tint || document.createElement('canvas');
+    cv.width = cv.height = S;
+    const g = cv.getContext('2d');
+    g.clearRect(0, 0, S, S);
+    g.drawImage(grPic.img, 0, 0, S, S);
+    g.globalCompositeOperation = 'multiply';
+    g.fillStyle = `rgb(${Math.round(c.r)},${Math.round(c.g)},${Math.round(c.b)})`;
+    g.fillRect(0, 0, S, S);
+    g.globalCompositeOperation = 'destination-in';
+    g.drawImage(grPic.img, 0, 0, S, S);
+    grPic.tint = cv; grPic.tintKey = key;
+  }
+  const size = 128 * view.zoom;                       // one tile is 128 level units wide
+  const [x0w] = toScreen(0, 0);
+  let x = x0w % size; if (x > 0) x -= size;
+  const top = Math.max(gy, 0);
+  for (let xx = x; xx < W; xx += size) ctx.drawImage(grPic.tint, Math.round(xx), Math.round(gy), Math.ceil(size) + 1, Math.ceil(size));
 }
 </script>
 <script>
