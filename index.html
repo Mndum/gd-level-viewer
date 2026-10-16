@@ -561,6 +561,7 @@ function paintSprite(img, fi, o, sx, sy, dim) {
 }
 // returns true when the object was handled (drawn, or intentionally invisible)
 function drawSprite(o, sx, sy, dim) {
+  if (o.id === 914 && typeof drawTextObject === 'function' && drawTextObject(o, sx, sy, dim)) return true;
   const name = ID_FRAMES[o.id];
   if (!name) return false;
   if (name === 'emptyFrame.png') return true;
@@ -2057,35 +2058,45 @@ const fxp = {};                                           // the shader values f
 const groupsOf = o => (o.groups ? String(o.groups).split('.').map(Number).filter(n => n > 0) : []);
 const clampN = (v, a, b) => Math.max(a, Math.min(b, v));
 
-// easing (the editor's 19 types: none, ease, elastic, bounce, exponential, sine, back; each in-out / in / out)
-function easeIn(k, r, t) {
-  switch (k) {
-    case 0: return Math.pow(t, r);
-    case 1: { const p = 0.3; return -Math.pow(2, 10 * (t - 1)) * Math.sin(((t - 1) - p / 4) * 2 * Math.PI / p); }
-    case 2: return 1 - easeOutBounce(1 - t);
-    case 3: return t === 0 ? 0 : Math.pow(2, 10 * (t - 1));
-    case 4: return 1 - Math.cos(t * Math.PI / 2);
-    default: { const c1 = 1.70158; return (c1 + 1) * t * t * t - c1 * t * t; }
-  }
-}
-function easeOutBounce(t) {
-  const n = 7.5625, d = 2.75;
-  if (t < 1 / d) return n * t * t;
-  if (t < 2 / d) { t -= 1.5 / d; return n * t * t + 0.75; }
-  if (t < 2.5 / d) { t -= 2.25 / d; return n * t * t + 0.9375; }
-  t -= 2.625 / d; return n * t * t + 0.984375;
+// easing: the same curves as the game's cocos2d-x ease actions. Order is the editor's:
+// 0 none, then in-out / in / out for ease, elastic, bounce, exponential, sine, back.
+const EASE_BACK = 1.70158;
+function bounceTime(t) {
+  if (t < 1 / 2.75) return 7.5625 * t * t;
+  if (t < 2 / 2.75) { t -= 1.5 / 2.75; return 7.5625 * t * t + 0.75; }
+  if (t < 2.5 / 2.75) { t -= 2.25 / 2.75; return 7.5625 * t * t + 0.9375; }
+  t -= 2.625 / 2.75; return 7.5625 * t * t + 0.984375;
 }
 function ease(type, rate, t) {
   if (t <= 0) return 0;
   if (t >= 1) return 1;
   if (!type) return t;
-  const r = rate > 0 ? rate : 2, g = Math.floor((type - 1) / 3), mode = (type - 1) % 3;   // g: 0 ease,1 elastic,2 bounce,3 expo,4 sine,5 back
-  const f = x => easeIn(g, r, x);
-  if (mode === 1) return f(t);
-  if (mode === 2) return 1 - f(1 - t);
-  return t < 0.5 ? f(2 * t) / 2 : 1 - f(2 - 2 * t) / 2;
+  const r = rate > 0 ? rate : 2, P = r * 0.15, TAU = 2 * Math.PI;           // elastic period: 0.3 at the default rate of 2
+  switch (type) {
+    case 1: { const x = t * 2; return x < 1 ? 0.5 * Math.pow(x, r) : 1 - 0.5 * Math.pow(2 - x, r); }
+    case 2: return Math.pow(t, r);
+    case 3: return Math.pow(t, 1 / r);
+    case 4: {                                                                  // elastic in-out
+      const x = t * 2 - 1, s = P * 1.5 / 4, pp = P * 1.5;
+      return x < 0 ? -0.5 * Math.pow(2, 10 * x) * Math.sin((x - s) * TAU / pp) : Math.pow(2, -10 * x) * Math.sin((x - s) * TAU / pp) * 0.5 + 1;
+    }
+    case 5: { const x = t - 1; return -Math.pow(2, 10 * x) * Math.sin((x - P / 4) * TAU / P); }
+    case 6: return Math.pow(2, -10 * t) * Math.sin((t - P / 4) * TAU / P) + 1;
+    case 7: return t < 0.5 ? (1 - bounceTime(1 - t * 2)) * 0.5 : bounceTime(t * 2 - 1) * 0.5 + 0.5;
+    case 8: return 1 - bounceTime(1 - t);
+    case 9: return bounceTime(t);
+    case 10: { const x = t / 0.5; return x < 1 ? 0.5 * Math.pow(2, 10 * (x - 1)) : 0.5 * (-Math.pow(2, -10 * (x - 1)) + 2); }
+    case 11: return Math.pow(2, 10 * (t - 1)) - 0.001;
+    case 12: return -Math.pow(2, -10 * t) + 1;
+    case 13: return -0.5 * (Math.cos(Math.PI * t) - 1);
+    case 14: return -Math.cos(t * Math.PI / 2) + 1;
+    case 15: return Math.sin(t * Math.PI / 2);
+    case 16: { const o = EASE_BACK * 1.525; let x = t * 2; if (x < 1) return (x * x * ((o + 1) * x - o)) / 2; x -= 2; return (x * x * ((o + 1) * x + o)) / 2 + 1; }
+    case 17: return t * t * ((EASE_BACK + 1) * t - EASE_BACK);
+    case 18: { const x = t - 1; return x * x * ((EASE_BACK + 1) * x + EASE_BACK) + 1; }
+  }
+  return t;
 }
-
 function colorTriggerInfo(o) {
   let chanId;
   if (o.id === 899) chanId = rawNum(o, '23', 0);
@@ -2630,6 +2641,56 @@ function drawGroundPicture(W, H, gy) {
   let x = x0w % size; if (x > 0) x -= size;
   const top = Math.max(gy, 0);
   for (let xx = x; xx < W; xx += size) ctx.drawImage(grPic.tint, Math.round(xx), Math.round(gy), Math.ceil(size) + 1, Math.ceil(size));
+}
+// ---- Text objects (id 914): the level stores the words (key 31, base64) and they are drawn in the game's big font ----
+const textCache = new Map();
+function textOf(o) {
+  const v = o.raw && o.raw['31'];
+  if (!v) return null;
+  try {
+    const bin = atob(v.replace(/-/g, '+').replace(/_/g, '/'));
+    return decodeURIComponent(escape(bin));
+  } catch (e) { return null; }
+}
+function textBitmap(text, hex) {
+  const key = text + '|' + hex + '|' + assetQuality;
+  const hit = textCache.get(key);
+  if (hit) return hit;
+  const lines = text.split(/\r?\n/);
+  const lh = bmfont.lineH, widths = lines.map(l => { let w = 0; for (const ch of l) { const c = bmfont.chars[ch.charCodeAt(0)]; if (c) w += c.xa; } return w; });
+  const W = Math.max(1, Math.ceil(Math.max(...widths))), H = Math.ceil(lh * lines.length);
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const g = cv.getContext('2d');
+  lines.forEach((l, li) => {
+    let x = (W - widths[li]) / 2;                                // centred lines
+    for (const ch of l) {
+      const c = bmfont.chars[ch.charCodeAt(0)];
+      if (!c) continue;
+      g.drawImage(bmfont.img, c.x, c.y, c.w, c.h, x + c.xo, li * lh + c.yo, c.w, c.h);
+      x += c.xa;
+    }
+  });
+  g.globalCompositeOperation = 'source-in';
+  g.fillStyle = '#' + hex; g.fillRect(0, 0, W, H);
+  if (textCache.size > 300) textCache.clear();
+  textCache.set(key, cv);
+  return cv;
+}
+function drawTextObject(o, sx, sy, dim) {
+  if (!bmfont.ready) return false;
+  const text = textOf(o);
+  if (text === null) return false;
+  if (!text.trim()) return true;
+  const cv = textBitmap(text, typeof channelHexP === 'function' ? channelHexP(o.col, 'main') : channelHex(o.col));
+  const Q = assetQuality === 'uhd' ? 4 : 2, k = view.zoom * 0.5 / Q;      // one text line is about a block tall at scale 1
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.rotate((o.rot * Math.PI) / 180);
+  ctx.scale(o.flipX ? -1 : 1, o.flipY ? -1 : 1);
+  ctx.globalAlpha = (dim ? 0.15 : 1) * curGA;
+  ctx.drawImage(cv, -cv.width * o.sx * k / 2, -cv.height * o.sy * k / 2, cv.width * o.sx * k, cv.height * o.sy * k);
+  ctx.restore();
+  return true;
 }
 </script>
 <script>
