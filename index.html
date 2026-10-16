@@ -2794,7 +2794,9 @@ function drawFrameImage(img, fi, Q, W, H) {
 }
 // ---- objects drawn from two sprites: the fill from the table plus a separate outline layer ----
 // The grid-patterned slopes are the window-grid triangle with the white slope outline drawn over it.
-const EXTRA_LAYERS = { 1743: 'blockOutline_14_001.png', 1744: 'blockOutline_15_001.png' };
+// 289 and 291 are the cornerless versions of the same grid-patterned slopes (the table only had their outline)
+Object.assign(ID_FRAMES, { 289: 'triangle_a_02_001.png', 291: 'triangle_a_04_001.png' });
+const EXTRA_LAYERS = { 1743: 'blockOutline_14_001.png', 1744: 'blockOutline_15_001.png', 289: 'blockOutline_14_001.png', 291: 'blockOutline_15_001.png' };
 function defaultMainFor(o) { return /^triangle_/.test(ID_FRAMES[o.id] || '') ? 1004 : 0; }
 </script>
 <script>
