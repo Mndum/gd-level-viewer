@@ -3163,6 +3163,90 @@ function stopPlay() {
   addEventListener('blur', up);
 })();
 </script>
+
+<script>
+"use strict";
+// ================= preset levels: a picker for the .gdlvl files hosted in levels/ (index.json lists them) =================
+(function presets() {
+  let list = [];
+  const css = document.createElement('style');
+  css.textContent =
+    '#presets{position:fixed;inset:0;z-index:30;background:rgba(5,9,18,.75);display:none;align-items:center;justify-content:center}' +
+    '#presets.on{display:flex}' +
+    '#presetsBox{width:min(640px,calc(100vw - 32px));max-height:calc(100vh - 48px);overflow:auto;padding:18px;border:4px solid var(--edge);border-radius:16px;background:var(--bar)}' +
+    '#presetsBox h2{margin:0 0 4px;font-size:22px}' +
+    '#presetsGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin:12px 0}' +
+    '#presetsGrid button{width:100%;height:auto;min-height:46px;padding:8px 10px;font-size:15px;line-height:1.15;white-space:normal}' +
+    '.presetOpen{margin-top:8px}';
+  document.head.appendChild(css);
+
+  const overlay = document.createElement('div');
+  overlay.id = 'presets';
+  overlay.innerHTML =
+    '<div id="presetsBox"><h2>Official levels</h2>' +
+    '<div class="small" id="presetsNote">Pick a level to open it in the viewer.</div>' +
+    '<div id="presetsGrid"></div>' +
+    '<div style="display:flex;justify-content:center"><button class="gdbtn wide green" id="presetsClose">Close</button></div></div>';
+  document.body.appendChild(overlay);
+  const close = () => overlay.classList.remove('on');
+  overlay.addEventListener('pointerdown', e => { if (e.target === overlay) close(); });
+  overlay.querySelector('#presetsClose').onclick = close;
+  addEventListener('keydown', e => { if (e.code === 'Escape' && overlay.classList.contains('on')) close(); });
+
+  async function openPreset(entry, btn) {
+    const label = btn.textContent;
+    btn.textContent = 'Loading…'; btn.disabled = true;
+    try {
+      const r = await fetch('levels/' + entry.file);
+      if (!r.ok) throw new Error('Could not download ' + entry.name + ' (' + r.status + ')');
+      close();
+      const m = $('menu'); if (m) m.classList.remove('on');
+      await loadFromText((await r.text()).trim(), entry.name + '.gdlvl');
+    } catch (e) { showError(e); }
+    btn.textContent = label; btn.disabled = false;
+  }
+  function show() {
+    const grid = overlay.querySelector('#presetsGrid');
+    grid.innerHTML = '';
+    for (const entry of list) {
+      const b = document.createElement('button');
+      b.className = 'gdbtn';
+      b.textContent = entry.name;
+      b.onclick = () => openPreset(entry, b);
+      grid.appendChild(b);
+    }
+    overlay.classList.add('on');
+  }
+  window.showPresetLevels = show;
+
+  function addButtons() {
+    const foot = $('menuClose') && $('menuClose').parentElement;
+    if (foot && !$('presetMenuBtn')) {
+      const row = document.createElement('div');
+      row.className = 'menuRow';
+      row.innerHTML = '<button class="gdbtn wide" id="presetMenuBtn">Official levels&hellip;</button>';
+      foot.parentElement.insertBefore(row, foot);
+      $('presetMenuBtn').onclick = () => { const m = $('menu'); if (m) m.classList.remove('on'); show(); };
+    }
+    const empty = $('empty');
+    if (empty && !$('presetEmptyBtn')) {
+      const b = document.createElement('button');
+      b.className = 'gdbtn wide presetOpen'; b.id = 'presetEmptyBtn'; b.textContent = 'Official levels…';
+      const open = $('emptyOpen');
+      if (open) open.insertAdjacentElement('afterend', b); else empty.appendChild(b);
+      b.onclick = show;
+    }
+  }
+  // the page's other scripts finish first, then the list is fetched and the buttons appear only when levels are hosted
+  setTimeout(async () => {
+    try {
+      const r = await fetch('levels/index.json', { cache: 'no-cache' });
+      if (r.ok) list = await r.json();
+    } catch (e) { /* no levels hosted with this copy of the page */ }
+    if (list.length) addButtons();
+  }, 0);
+})();
+</script>
 <script>
 "use strict";
 // ================= public build: empty start =================
