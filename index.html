@@ -189,6 +189,7 @@
         <button class="gdbtn wide" id="btnReconnect" hidden>Reconnect saved folder</button>
       </div>
       <div class="small" id="assetStatus">no sprites loaded</div>
+      <div class="small">Chrome and Edge will not let a website open folders under <b>Program Files</b> (they say "contains system files"), and the game usually lives there. If the picker refuses your Resources folder, copy the files named <b>GJ_GameSheet*</b>, <b>PixelSheet_01*</b>, <b>GJ_ParticleSheet*</b>, <b>FireSheet_01*</b> and <b>bigFont*</b> (the <b>-uhd</b> and <b>-hd</b> ones) into any other folder on your PC, and choose that folder here. Or use &quot;Pick folder (other browsers)&quot;, which has no such limit but cannot remember the folder.</div>
       <div class="menuRow">
         <span class="small">Asset quality</span>
         <label class="chk"><input type="radio" name="aq" value="uhd" checked> UHD</label>
@@ -1182,7 +1183,7 @@ async function autoLoadAssets() {
   }
   try {
     const h = await kvGet('gdFolder');
-    if (!h) { setAssetStatus('Choose your Geometry Dash "Resources" folder once from the menu. It is remembered after that.'); return; }
+    if (!h) { setAssetStatus('Choose your Geometry Dash "Resources" folder once from the menu (if Chrome refuses it because it is under Program Files, the menu explains the workaround). It is remembered after that.'); return; }
     folderHandle = h;
     const p = await h.queryPermission({ mode: 'read' });
     if (p === 'granted') { await loadFromFolder(h); }
