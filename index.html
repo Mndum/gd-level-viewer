@@ -532,7 +532,8 @@ function sheetBitmap(sheet) {
   if (sheet.bitmap) return sheet.bitmap;
   if (!sheet.loading) {
     sheet.loading = true;
-    createImageBitmap(sheet.file).then(b => { sheet.bitmap = b; atlas.tintCache.clear(); scheduleDraw(); if (typeof onSheetReady === 'function') onSheetReady(); })
+    // sheets from the site are only downloaded when something is first drawn from them (file.lazyUrl)
+    (sheet.file && sheet.file.lazyUrl ? fetch(sheet.file.lazyUrl).then(r => { if (!r.ok) throw new Error('sheet'); return r.blob(); }) : Promise.resolve(sheet.file)).then(createImageBitmap).then(b => { sheet.bitmap = b; atlas.tintCache.clear(); scheduleDraw(); if (typeof onSheetReady === 'function') onSheetReady(); })
       .catch(() => { sheet.failed = true; });
   }
   return null;
@@ -977,7 +978,8 @@ const UI_FRAMES = ['GJ_pauseEditorBtn_001.png', 'GJ_playEditorBtn_001.png', 'GJ_
 const SHEET_STEMS = ['PixelSheet_01', 'GJ_GameSheet', 'GJ_GameSheet02', 'GJ_GameSheet03', 'GJ_ParticleSheet', 'FireSheet_01'];
 let lastName = '';
 let currentTab = 'build';
-let assetQuality = 'uhd';          // UHD loads first
+let assetQuality = 'hd';           // HD is half the download; dense screens and an explicit choice use UHD
+try { const _q = localStorage.getItem('gd-level-viewer.quality'); assetQuality = _q === 'uhd' || _q === 'hd' ? _q : ((window.devicePixelRatio || 1) >= 2 ? 'uhd' : 'hd'); } catch (e) { /* keep hd */ }
 let lastAssetFiles = null;         // files from the plain folder picker (other browsers)
 let folderHandle = null;           // remembered Resources folder (File System Access API)
 const esc2 = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1269,7 +1271,7 @@ async function reloadAssetsForQuality() {
     $('aqNote').textContent = assetQuality.toUpperCase() + ' sprites active';
   } catch (e) { showError(e); }
 }
-document.querySelectorAll('input[name="aq"]').forEach(r => r.onchange = () => { if (r.checked) { assetQuality = r.value; reloadAssetsForQuality(); } });
+document.querySelectorAll('input[name="aq"]').forEach(r => { r.checked = r.value === assetQuality; r.onchange = () => { if (r.checked) { assetQuality = r.value; try { localStorage.setItem('gd-level-viewer.quality', r.value); } catch (e) { } reloadAssetsForQuality(); } }; });
 $('btnFolder').onclick = chooseFolder;
 $('btnReconnect').onclick = reconnectFolder;
 // plain folder picker fallback keeps its files so a quality change can re-read them
@@ -1429,17 +1431,22 @@ async function loadAssetsFromSite() {
   const files = [];
   setAssetStatus(`downloading ${assetQuality.toUpperCase()} sprites…`);
   try {
-    for (const stem of [...SHEET_STEMS, 'bigFont']) {
+    // every sheet is fetched at the same time; only the small description files come now, the big pictures are fetched when first drawn from
+    const got = await Promise.all([...SHEET_STEMS, 'bigFont'].map(async stem => {
       const ext = stem === 'bigFont' ? 'fnt' : 'plist';
       for (const q of qs) {
         const base = `${stem}-${q}`;
-        const [a, b] = await Promise.all([fetch(`assets/${base}.${ext}`), fetch(`assets/${base}.png`)]);
-        if (a.ok && b.ok) {
-          files.push(new File([await a.blob()], `${base}.${ext}`), new File([await b.blob()], `${base}.png`));
-          break;
+        if (stem === 'bigFont') {
+          const [a, b] = await Promise.all([fetch(`assets/${base}.${ext}`), fetch(`assets/${base}.png`)]);
+          if (a.ok && b.ok) return [new File([await a.blob()], `${base}.${ext}`), new File([await b.blob()], `${base}.png`)];
+        } else {
+          const a = await fetch(`assets/${base}.${ext}`);
+          if (a.ok) return [new File([await a.blob()], `${base}.${ext}`), { name: `${base}.png`, lazyUrl: `assets/${base}.png` }];
         }
       }
-    }
+      return [];
+    }));
+    for (const g of got) files.push(...g);
   } catch (e) { return false; }
   if (!files.length) return false;
   siteAssets = true;
@@ -3702,6 +3709,8 @@ function stopPlay() {
     }
   }
   setTimeout(addButtons, 300);
+  // later visits: the sprite sheets come from the browser's own cache (sw.js)
+  try { if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) navigator.serviceWorker.register('sw.js').catch(() => { }); } catch (e) { }
 })();
 </script>
 
