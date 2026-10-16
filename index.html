@@ -752,7 +752,7 @@ function draw() {
   let lineCol = 'rgba(61,220,151,.7)';
   if (opt.bg && level) {
     const gc = chan(1001), lc = chan(1002);
-    if (gc && gy < H) { ctx.fillStyle = `rgb(${Math.round(gc.r)},${Math.round(gc.g)},${Math.round(gc.b)})`; ctx.fillRect(0, Math.max(0, gy), W, H - Math.max(0, gy)); if (typeof drawGroundPicture === 'function') drawGroundPicture(W, H, gy); }
+    if (gc && gy < H) { ctx.fillStyle = `rgb(${Math.round(gc.r)},${Math.round(gc.g)},${Math.round(gc.b)})`; ctx.fillStyle = '#000'; ctx.fillRect(0, Math.max(0, gy), W, H - Math.max(0, gy)); if (typeof drawGroundPicture === 'function') drawGroundPicture(W, H, gy); }
     if (lc) lineCol = `rgb(${Math.round(lc.r)},${Math.round(lc.g)},${Math.round(lc.b)})`;
   }
   ctx.strokeStyle = lineCol; ctx.lineWidth = 2;
@@ -796,6 +796,7 @@ function draw() {
     const [sx, sy] = toScreen(hover.x, hover.y), r = Math.max(7, 18 * Math.max(hover.sx, hover.sy) * view.zoom);
     ctx.strokeStyle = '#7c5cff'; ctx.lineWidth = 2; ctx.strokeRect(sx - r, sy - r, r * 2, r * 2);
   }
+  if (typeof drawPlayer === 'function') drawPlayer();
   applyEffects();
 }
 function drawObject(o0, dim) {
@@ -2211,6 +2212,8 @@ function describeTrigger(o) {
 }
 
 // ---------- timeline model ----------
+// where the triggers read the level from: the cube while playing, else the camera
+const tlPos = () => (window.play && window.play.active ? window.play.x : view.cx);
 const tl = { on: true, cam: true, dirty: true, model: null, cacheX: null, cache: null, timer: 0 };
 function levelStartSpeed() {
   const m = /(?:^|,)kA4,(\d+)/.exec(level.header || '');
@@ -2389,7 +2392,7 @@ function stateAt(X) {
 chan = function (id) {
   if (!level) return undefined;
   if (!tl.on) return level.channels.get(id);
-  return stateAt(view.cx).channels.get(id) || level.channels.get(id);
+  return stateAt(tlPos()).channels.get(id) || level.channels.get(id);
 };
 let curPulse = null;                                         // pulse on the group of the object being drawn (timeline)
 function channelHexP(id, kind) {
@@ -2406,7 +2409,7 @@ function channelHexP(id, kind) {
 }
 groupStateFor = function (o) {
   if (!tl.on || !level || !o.groups) return null;
-  const st = stateAt(view.cx).groups;
+  const st = stateAt(tlPos()).groups;
   if (!st.size) return null;
   let dx = 0, dy = 0, alpha = 1, hidden = false, rot = 0, sx = 1, sy = 1, center = 0, lock = false, pulse = null, any = false;
   for (const part of groupsOf(o)) {
@@ -2520,7 +2523,7 @@ const _drawTl = draw;
 draw = function () {
   let st = null, m = null;
   try {
-    if (level && tl.on) { m = timelineModel(); st = stateAt(view.cx); }
+    if (level && tl.on) { m = timelineModel(); st = stateAt(tlPos()); }
     if (atlas.tintCache && atlas.tintCache.size > 2500) atlas.tintCache.clear();
     for (const k of Object.keys(fxp)) delete fxp[k];
     if (st && m.hasShaders) { Object.assign(fxp, st.fx); fxp.time = st.T; }
@@ -2622,8 +2625,12 @@ function drawGroundPicture(W, H, gy) {
       if (grPic.img) draw();
     }).catch(() => { grPic.loading = 0; grPic.id = id; });
   }
-  if (!grPic.img) return;
   const c = chan(1001) || { r: 255, g: 255, b: 255 };
+  if (!grPic.img) {                                         // no tile image: a plain band in the ground colour
+    ctx.fillStyle = `rgb(${Math.round(c.r)},${Math.round(c.g)},${Math.round(c.b)})`;
+    ctx.fillRect(0, Math.max(0, gy), W, Math.min(H - Math.max(0, gy), 128 * view.zoom));
+    return;
+  }
   const key = id + '|' + Math.round(c.r / 4) + '|' + Math.round(c.g / 4) + '|' + Math.round(c.b / 4) + '|' + assetQuality;
   if (grPic.tintKey !== key) {
     const S = 256, cv = grPic.tint || document.createElement('canvas');
@@ -2756,7 +2763,266 @@ function objMatrix(o, k) {
   const sx = o.sx * k * (o.flipX ? -1 : 1), sy = o.sy * k * (o.flipY ? -1 : 1);
   ctx.transform(Math.cos(ty) * sx, Math.sin(ty) * sx, -Math.sin(tx) * sy, Math.cos(tx) * sy, 0, 0);
 }
-</script><script>
+</script>
+<script>
+"use strict";
+// ================= playable cube preview =================
+// Written from the player-physics decompilation (camila314/gdp): the 240 Hz sub-step loop, per-speed jump/gravity table,
+// cube jump and gravity rules, the solid-block landing/kill rules and the 9x9 kill hitbox. Cube only, classic mode.
+// Not simulated: other vehicles, slopes, moving or toggled objects, portals other than speed. Pad and orb strengths and the
+// spike hitboxes are estimates (they are not in the physics repo).
+window.play = {
+  active: false, dead: 0, attempt: 0, x: -30, y: 15, ly: 15, yVel: 0, onGround: true, boosted: false, rot: 0,
+  hold: false, press: false, world: null, raf: 0, last: 0, camY: 85, best: 0, done: 0, touched: new Set(), orbUsed: new Set(), icon: null
+};
+const PLAYER = { half: 15, small: 4.5, snap: 10, maxFall: 15, startX: -30 };
+// jump strength and gravity per player speed (units/second -> the game's updateTimeMod table)
+function physFor(v) {
+  if (Math.abs(v - 251.16) < 1) return { ys: 10.620032, g: 0.940199 };
+  if (Math.abs(v - 311.58) < 1) return { ys: 11.1800318, g: 0.958199024 };
+  if (Math.abs(v - 387.42) < 1) return { ys: 11.420032, g: 0.957199 };
+  return { ys: 11.230032, g: 0.961199 };                          // 3x and 4x
+}
+const PAD_BOOST = { 35: 16, 140: 10, 1332: 20 };                   // yellow, pink, red pads (estimates)
+const ORB_BOOST = { 36: 11.18, 141: 7.4, 1333: 14.9 };            // yellow, pink, red orbs (estimates)
+// hitboxes: [width, height, offset x, offset y] in level units before scale and rotation
+const HIT_BLOCK = { 40: [30, 15, 0, -7.5] };
+const HIT_SPIKE = { 39: [6, 6, 0, -12], 103: [6, 6, 0, -12] };
+
+function objBox(o, w, h, ox, oy) {
+  const a = -o.rot * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  const px = ox * o.sx * (o.flipX ? -1 : 1), py = oy * o.sy * (o.flipY ? -1 : 1);
+  const hw = w * o.sx / 2, hh = h * o.sy / 2;
+  const cx = o.x + px * c - py * s, cy = o.y + px * s + py * c;
+  const ex = Math.abs(hw * c) + Math.abs(hh * s), ey = Math.abs(hw * s) + Math.abs(hh * c);
+  return { l: cx - ex, r: cx + ex, b: cy - ey, t: cy + ey, o, st: 0 };
+}
+function buildPlayWorld() {
+  const w = { solids: [], hazards: [], pads: [], orbs: [], grid: new Map(), stamp: 0 };
+  const put = (list, box) => {
+    list.push(box);
+    for (let cx = Math.floor(box.l / 60); cx <= Math.floor(box.r / 60); cx++) {
+      if (!w.grid.has(cx)) w.grid.set(cx, []);
+      w.grid.get(cx).push({ kind: list, box });
+    }
+  };
+  for (const o of level.objs) {
+    if (o.cls === 'block') { const h = HIT_BLOCK[o.id] || [30, 30, 0, 0]; put(w.solids, objBox(o, h[0], h[1], h[2], h[3])); }
+    else if (o.cls === 'spike') { const h = HIT_SPIKE[o.id] || [6, 12, 0, -9]; put(w.hazards, objBox(o, h[0], h[1], h[2], h[3])); }
+    else if (o.cls === 'padorb') {
+      if (PAD_BOOST[o.id]) put(w.pads, objBox(o, 30, 8, 0, -11));
+      else if (ORB_BOOST[o.id]) put(w.orbs, objBox(o, 36, 36, 0, 0));
+    }
+  }
+  return w;
+}
+const overlaps = (r, b) => r.l < b.r && r.r > b.l && r.b < b.t && r.t > b.b;
+
+function playReset() {
+  const p = play;
+  p.x = PLAYER.startX; p.y = PLAYER.half; p.ly = p.y; p.yVel = 0; p.onGround = true; p.boosted = false; p.rot = 0;
+  p.dead = 0; p.touched = new Set(); p.orbUsed = new Set(); p.attempt++; p.done = 0; p.press = false;
+}
+function hitGround() { play.onGround = true; play.boosted = false; play.yVel = 0; }
+function boost(v) { const p = play; p.boosted = true; p.onGround = false; p.yVel = v; }
+function playDie() { play.dead = 0.0001; }
+
+function playStep(dtF) {                                           // dtF: time in 1/60 s frames (the game's physicsSecond)
+  const p = play, m = timelineModel();
+  const spd = m.speedAt(Math.max(0, p.x)), ph = physFor(spd);
+  p.ly = p.y;
+  p.x += spd / 60 * dtF;
+  // jump and gravity (cube branch of the game's updateJump)
+  if (p.onGround && p.hold) {
+    p.onGround = false; p.boosted = true; p.yVel = ph.ys;
+  } else if (p.boosted) {
+    p.yVel -= ph.g * dtF;
+    if (p.yVel < 0) p.boosted = false;
+  } else {
+    if (p.yVel < 0) p.onGround = false;
+    p.yVel = Math.max(p.yVel - ph.g * dtF, -PLAYER.maxFall);
+  }
+  p.y += p.yVel * dtF;
+  // rotation: spin in the air, settle to the nearest quarter turn on the ground
+  if (!p.onGround) p.rot += 7.5 * dtF;
+  else p.rot += (Math.round(p.rot / 90) * 90 - p.rot) * Math.min(1, dtF * 0.4725);
+  playCollide(ph);
+}
+function playCollide() {
+  const p = play, w = p.world, H = PLAYER.half;
+  if (p.y - H <= 0) { p.y = H; hitGround(); }                      // the ground
+  const rect = { l: p.x - H, r: p.x + H, b: p.y - H, t: p.y + H };
+  const small = { l: p.x - PLAYER.small, r: p.x + PLAYER.small, b: p.y - PLAYER.small, t: p.y + PLAYER.small };
+  const stamp = ++w.stamp, near = [];
+  for (let cx = Math.floor((p.x - 40) / 60); cx <= Math.floor((p.x + 40) / 60); cx++) {
+    for (const e of (w.grid.get(cx) || [])) { if (e.box.st !== stamp) { e.box.st = stamp; near.push(e); } }
+  }
+  for (const e of near) {
+    const b = e.box;
+    if (e.kind === w.solids) {
+      if (!overlaps(rect, b)) continue;
+      const dy = p.y - p.ly, bottom = p.y - H, maxSnap = bottom + PLAYER.snap, floatG = maxSnap - dy;
+      let hit = false;
+      if (maxSnap < b.t && floatG < b.t) hit = true;               // too far into it (side or underside): a crash
+      else if (p.yVel > 0) hit = false;                            // rising past the top edge: no collision
+      else { p.y = b.t + H; hitGround(); }                         // falling onto it: land
+      if (hit && overlaps(small, b)) { playDie(); return; }
+    } else if (e.kind === w.hazards) {
+      if (overlaps(small, b)) { playDie(); return; }
+    } else if (e.kind === w.pads) {
+      if (overlaps(rect, b)) { if (!p.touched.has(b)) { p.touched.add(b); boost(PAD_BOOST[b.o.id]); } } else p.touched.delete(b);
+    } else if (e.kind === w.orbs) {
+      if (overlaps(rect, b)) {
+        if (p.press && !p.orbUsed.has(b)) { p.orbUsed.add(b); p.press = false; boost(ORB_BOOST[b.o.id]); }
+      }
+    }
+  }
+  if (!p.hold) p.orbUsed.clear();
+}
+function playUpdate(delta) {
+  const p = play;
+  if (p.dead) {
+    p.dead += delta;
+    if (p.dead > 0.6) playReset();
+    return;
+  }
+  const steps = Math.max(1, Math.floor(delta * 240)), dtF = delta * 60 / steps;
+  for (let i = 0; i < steps && !p.dead; i++) playStep(dtF);
+  if (p.x > timelineModel().maxX) { p.done++; p.best = 100; playReset(); }
+  if (!p.dead) { p.press = false; p.best = Math.max(p.best, Math.min(100, Math.floor(Math.max(0, p.x) / timelineModel().maxX * 100))); }
+  // camera follows the cube
+  const W = canvas._w / view.zoom;
+  view.cx = p.x + W * 0.2;
+  const target = Math.max(85, p.y - 40);
+  play.camY += (target - play.camY) * Math.min(1, delta * 8);
+  view.cy = play.camY;
+}
+
+// ---- drawing the cube (the real icon when it can be loaded, else a plain square) ----
+const PLAYER_FRAMES = ['player_01_001.png', 'player_01_2_001.png', 'player_01_extra_001.png'];
+async function fetchIconFile(name) {
+  const hit = await fetchAnyFile([name]);
+  if (hit) return hit;
+  try {
+    if (typeof folderHandle !== 'undefined' && folderHandle && (await folderHandle.queryPermission({ mode: 'read' })) === 'granted') {
+      const dir = await folderHandle.getDirectoryHandle('icons');
+      return await (await dir.getFileHandle(name)).getFile();
+    }
+  } catch (e) { /* no icons folder */ }
+  return null;
+}
+async function loadPlayerIcon() {
+  if (play.icon) return;
+  play.icon = { ready: false };
+  for (const q of (assetQuality === 'uhd' ? ['uhd', 'hd', ''] : ['hd', 'uhd', ''])) {
+    const sfx = q ? '-' + q : '';
+    const plist = await fetchIconFile(`player_01${sfx}.plist`), png = plist && await fetchIconFile(`player_01${sfx}.png`);
+    if (!plist || !png) continue;
+    const sheet = { file: png, bitmap: null, loading: false, Q: q === 'uhd' ? 4 : q === 'hd' ? 2 : 1 };
+    if (parseAtlasPlist(await plist.text(), sheet, new Set(PLAYER_FRAMES)) > 0) { play.icon.ready = true; break; }
+  }
+  draw();
+}
+function drawPlayer() {
+  if (!play.active || !level) return;
+  const [sx, sy] = toScreen(play.x, play.y);
+  const k = view.zoom;
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.rotate(play.rot * Math.PI / 180);
+  ctx.globalAlpha = play.dead ? Math.max(0, 1 - play.dead * 3) : 1;
+  let drawn = false;
+  if (play.icon && play.icon.ready) {
+    const cols = ['7dff00', '00ffff', 'ffffff'];
+    PLAYER_FRAMES.forEach((name, i) => {
+      const fi = atlas.frames.get(name), img = fi && tintedFrame(fi, cols[i]);
+      if (!img) return;
+      const Q = fi.sheet.Q, W = fi.w / Q, Hh = fi.h / Q;
+      ctx.save();
+      ctx.scale(k, k);
+      ctx.translate(fi.ox / Q, -fi.oy / Q);
+      if (fi.rotated) ctx.rotate(-Math.PI / 2);
+      const dw = fi.rotated ? Hh : W, dh = fi.rotated ? W : Hh;
+      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+      drawn = true;
+    });
+  }
+  if (!drawn) {
+    ctx.fillStyle = '#7dff00'; ctx.fillRect(-15 * k, -15 * k, 30 * k, 30 * k);
+    ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(1, 2 * k); ctx.strokeRect(-15 * k, -15 * k, 30 * k, 30 * k);
+  }
+  ctx.restore();
+}
+
+// ---- controls ----
+function playLoop(ts) {
+  if (!play.active) return;
+  const dt = Math.min(0.05, Math.max(0, (ts - play.last) / 1000));
+  play.last = ts;
+  try { playUpdate(dt); } catch (e) { console.error(e); }
+  hudUpdate();
+  draw();
+  play.raf = requestAnimationFrame(playLoop);
+}
+function hudUpdate() {
+  const h = $('plHud');
+  if (!h) return;
+  const pct = Math.min(100, Math.floor(Math.max(0, play.x) / timelineModel().maxX * 100));
+  h.textContent = `Attempt ${play.attempt}  ·  ${pct}%  ·  best ${play.best}%` + (play.done ? '  ·  level complete!' : '');
+}
+async function startPlay() {
+  if (!level || play.active) return;
+  if (tl.timer) { clearInterval(tl.timer); tl.timer = 0; $('tlPlay').innerHTML = '&#9654;'; }
+  play.world = buildPlayWorld();
+  play.attempt = 0; play.best = 0; play.camY = 85; play.hold = false;
+  playReset();
+  play.active = true;
+  view.zoom = canvas._h / 320;
+  view.selected = null; view.selAll = [];
+  $('plBtn').textContent = 'Stop';
+  $('plHud').hidden = false;
+  loadPlayerIcon();
+  play.last = performance.now();
+  play.raf = requestAnimationFrame(playLoop);
+}
+function stopPlay() {
+  play.active = false;
+  cancelAnimationFrame(play.raf);
+  $('plBtn').textContent = 'Play';
+  $('plHud').hidden = true;
+  canvas.style.transform = ''; $('gl').style.transform = '';
+  draw();
+}
+(function setupPlay() {
+  const bar = $('timeline');
+  const btn = document.createElement('button');
+  btn.className = 'mini'; btn.id = 'plBtn'; btn.textContent = 'Play'; btn.style.width = 'auto'; btn.style.padding = '0 10px';
+  btn.title = 'Play this level as a cube (hold Space, Up or the mouse to jump; Esc to stop)';
+  btn.onclick = () => (play.active ? stopPlay() : startPlay());
+  bar.insertBefore(btn, bar.firstChild);
+  const hud = document.createElement('div');
+  hud.id = 'plHud'; hud.hidden = true;
+  hud.style.cssText = 'position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:4;padding:6px 14px;border:3px solid var(--edge);border-radius:12px;background:rgba(16,25,47,.88);font-size:16px';
+  $('stage').appendChild(hud);
+  const down = e => {
+    if (!play.active) return;
+    if (!play.hold) play.press = true;
+    play.hold = true;
+  };
+  const up = () => { play.hold = false; };
+  addEventListener('keydown', e => {
+    if (!play.active) return;
+    if (e.code === 'Escape') { stopPlay(); return; }
+    if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') { e.preventDefault(); if (!e.repeat) down(); }
+  });
+  addEventListener('keyup', e => { if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') up(); });
+  canvas.addEventListener('pointerdown', e => { if (!play.active) return; e.stopImmediatePropagation(); down(); }, true);
+  addEventListener('pointerup', up);
+  addEventListener('blur', up);
+})();
+</script>
+<script>
 "use strict";
 // ================= public build: empty start =================
 (function () {

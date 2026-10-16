@@ -11,6 +11,7 @@ View and edit Geometry Dash level files in your browser, in the style of the in-
 - **Saving:** Menu → Save edited level downloads a *new* file in the same format. Your original is
   never changed. Edited levels have not been tested inside Geometry Dash itself, so keep your original.
 - **Trigger timeline:** a bar under the view plays or scrubs through the level. Colour, pulse, move, alpha, toggle, rotate, scale, spawn, camera (zoom, offset, rotation) and shader triggers take effect, with easing; the level's own background and ground pictures and colours are drawn. Hover or select a trigger to see what it does. Shader strength is approximate, and other trigger types are described but not simulated.
+- **Playable cube:** the Play button in the timeline bar runs a cube through the level (hold Space, Up or the mouse to jump, Esc to stop). The movement follows the game's player physics; it covers the cube in classic mode, solid blocks, spikes, speed portals, and basic pads and orbs, and ignores slopes, other vehicles and moving objects.
 - Shader gallery: ten named image effects applied to the view, with Save PNG.
 - UHD sprites by default, HD selectable.
 - The level's song plays from your own game folder (see below) and is dropped when you open another level.
