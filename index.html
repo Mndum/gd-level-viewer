@@ -2054,7 +2054,7 @@ function triggerFlags(o) {
 }
 // Property keys used below come from the community object-property table (gd-info-explorer / GD Docs).
 const SHADER_IDS = new Set([2904, 2905, 2907, 2909, 2910, 2911, 2912, 2913, 2914, 2915, 2916, 2917, 2919, 2920, 2921, 2922, 2923]);
-const SIM_IDS = new Set([1616, 1347, 899, 29, 30, 104, 105, 221, 717, 718, 743, 900, 915, 901, 1006, 1007, 1049, 1268, 1346, 2067, 1913, 1916, 2015]);
+const SIM_IDS = new Set([1912, 1616, 1347, 899, 29, 30, 104, 105, 221, 717, 718, 743, 900, 915, 901, 1006, 1007, 1049, 1268, 1346, 2067, 1913, 1916, 2015]);
 const isSimulated = o => (SIM_IDS.has(o.id) || SHADER_IDS.has(o.id)) && o.raw['11'] !== '1';
 // every shader value the timeline can drive, with its "off" value; units are the editor's own (screen height = 320 units)
 const SH_DEF = { gray: 0, grayR: 1, grayG: 1, grayB: 1, grayLum: 0, sepia: 0, invR: 0, invG: 0, invB: 0, hue: 0,
@@ -2265,6 +2265,11 @@ function buildTimeline() {
       case 901:
         if (o.raw['100'] === '1' || o.raw['394'] === '1') return;
         push(ev.move, g, { t, src: groupsOf(o), dur, e, rate, dx: rawNum(o, '28', 0), dy: rawNum(o, '29', 0) }); return;
+      case 1912: {                                               // Random: key 10 = chance of group 51, otherwise group 71 (a preview can't roll dice, so it shows the likelier one)
+        const pick = rawNum(o, '10', 50) >= 50 ? g : rawNum(o, '71', 0), d = rawNum(o, '63', 0);
+        for (const u of members.get(pick) || []) if (u.raw['62'] === '1') fire(u, t + d, depth + 1);
+        return;
+      }
       case 1616:                                                 // Stop: acts on the triggers whose own group is the target; option 580 = 0 stop, 1 pause, 2 resume (from the exe)
         if (g) ev.stops.push({ t, tgt: g, mode: rawNum(o, '580', 0) }); return;
       case 1347:                                                 // Follow: group g copies the movement of group 71, scaled by the x/y mods, for the duration
