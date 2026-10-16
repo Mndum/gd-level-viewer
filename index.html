@@ -4067,6 +4067,7 @@ function stopPlay() {
     const sel = selList(); if (!sel.length || !S.state) return;
     pushOp(opRaw(sel, o => { for (const k of keys(o)) setKey(o, k, S.state[k]); }, name));
   };
+  rp.special.onclick = () => { if (window.dialogsApi) dialogsApi.openEditSpecial(); };
   rp.group.onclick = () => { if (selList().length && window.dialogsApi) dialogsApi.openEditGroup(); };
   rp.object.onclick = () => { if (selList().length && window.dialogsApi) dialogsApi.openEditObject(); };
   rp.cvals.onclick = () => {
@@ -4125,6 +4126,7 @@ function stopPlay() {
     const sel = (typeof selList === 'function' ? selList() : []).length;
     for (const k of ['copy', 'dup', 'desel', 'cvals', 'group', 'object']) rp[k].classList.toggle('dim', !sel);
     rp.paste.classList.toggle('dim', !S.clip);
+    rp.special.classList.toggle('dim', !(window.dialogsApi && dialogsApi.hasSpecial && dialogsApi.hasSpecial()));
     rp.pstate.classList.toggle('dim', !S.state); rp.pcolor.classList.toggle('dim', !S.state);
     top.trash.classList.toggle('off', !sel);
     top.undo.classList.toggle('off', !(hist && hist.undo.length));
@@ -4473,7 +4475,7 @@ function stopPlay() {
   function numRow(o, y, label, getter, setter, step) {
     txt(root, 'big', label, 44, o(250, y, 380, 60), 'left');
     nbtn(root, 'GJ_button_04', null, o(560, y, 70, 70), () => { setter(getter() - (step || 1)); open(current); }, '-', 'big', 56);
-    txt(root, 'gold', String(getter()), 56, o(690, y, 150, 70));
+    txt(root, 'gold', String(Math.round(getter() * 1000) / 1000), 56, o(690, y, 150, 70));
     nbtn(root, 'GJ_button_04', null, o(820, y, 70, 70), () => { setter(getter() + (step || 1)); open(current); }, '+', 'big', 56);
   }
   const groupList = o => (o.raw && o.raw['57'] ? String(o.raw['57']).split('.').map(Number).filter(n => n > 0) : []);
@@ -4490,8 +4492,8 @@ function stopPlay() {
     nbtn(root, 'GJ_button_04', null, o(700, 430, 230, 90), apply(() => []), 'Clear', 'gold', 54);
     nbtn(root, 'GJ_button_01', null, o(500, 570, 190, 90), close, 'OK', 'gold', 60);
   }
-  const keyRow = (o, y, label, key, def, lo, hi) => numRow(o, y, label, () => rawNumOf(selObjs()[selObjs().length - 1] || {}, key, def),
-    v => A.editRaw(selObjs(), ob => A.setKey(ob, key, Math.max(lo, Math.min(hi, v))), label), 1);
+  const keyRow = (o, y, label, key, def, lo, hi, step) => numRow(o, y, label, () => rawNumOf(selObjs()[selObjs().length - 1] || {}, key, def),
+    v => A.editRaw(selObjs(), ob => A.setKey(ob, key, Math.round(Math.max(lo, Math.min(hi, v)) * 1000) / 1000), label), step || 1);
   function editObjectDialog() {
     const o = smallDialog(1000, 720, 'Edit Object', 80);
     const p = selObjs()[selObjs().length - 1];
@@ -4502,6 +4504,31 @@ function stopPlay() {
     keyRow(o, 550, 'Editor layer:', '20', 0, 0, 9999);
     nbtn(root, 'GJ_button_01', null, o(500, 650, 190, 90), close, 'OK', 'gold', 60);
   }
+
+  // Edit Special: the settings of a trigger. Keys are the ones the exe reads for these triggers (see the key table); labels follow the game's popups.
+  const EASES = 0, T_ = [51, 'Target group:', 0, 0, 9999, 1];
+  const SPECIAL = {
+    901: ['Move', [T_, [10, 'Move time:', 0, 0, 99, 0.1], [28, 'Move X:', 0, -9999, 9999, 10], [29, 'Move Y:', 0, -9999, 9999, 10], [30, 'Easing:', 0, 0, 18, 1], [85, 'Ease rate:', 2, 0.1, 20, 0.1]]],
+    1007: ['Alpha', [T_, [10, 'Fade time:', 0, 0, 99, 0.1], [35, 'Opacity:', 1, 0, 1, 0.1]]],
+    1049: ['Toggle', [T_, [56, 'Activate (1/0):', 0, 0, 1, 1]]],
+    1346: ['Rotate', [T_, [71, 'Center group:', 0, 0, 9999, 1], [10, 'Time:', 0, 0, 99, 0.1], [68, 'Degrees:', 0, -9999, 9999, 15], [69, 'Times 360:', 0, -99, 99, 1], [30, 'Easing:', 0, 0, 18, 1]]],
+    2067: ['Scale', [T_, [71, 'Center group:', 0, 0, 9999, 1], [10, 'Time:', 0, 0, 99, 0.1], [150, 'Scale X:', 1, 0, 99, 0.1], [151, 'Scale Y:', 1, 0, 99, 0.1], [30, 'Easing:', 0, 0, 18, 1]]],
+    1347: ['Follow', [T_, [71, 'Follow group:', 0, 0, 9999, 1], [10, 'Time:', 0, 0, 99, 0.1], [72, 'X mod:', 1, -99, 99, 0.1], [73, 'Y mod:', 1, -99, 99, 0.1]]],
+    1616: ['Stop', [T_, [580, 'Option (0/1/2):', 0, 0, 2, 1]]],
+    1268: ['Spawn', [T_, [63, 'Delay:', 0, 0, 99, 0.1]]],
+    1912: ['Random', [T_, [71, 'Group 2:', 0, 0, 9999, 1], [10, 'Chance %:', 50, 0, 100, 5]]],
+    1913: ['Zoom', [[10, 'Time:', 0, 0, 99, 0.1], [371, 'Zoom:', 1, 0.1, 10, 0.1], [30, 'Easing:', 0, 0, 18, 1]]],
+    1006: ['Pulse', [T_, [45, 'Fade in:', 0, 0, 99, 0.1], [46, 'Hold:', 0, 0, 99, 0.1], [47, 'Fade out:', 0, 0, 99, 0.1]]]
+  };
+  const specialOf = () => { const p = selObjs()[selObjs().length - 1]; return p && SPECIAL[p.id] ? SPECIAL[p.id] : null; };
+  function editSpecialDialog() {
+    const sp = specialOf(); if (!sp) return close();
+    const rows = sp[1], h = 260 + rows.length * 90;
+    const o = smallDialog(1000, h, sp[0] + ' Trigger', 80);
+    rows.forEach((r, i) => keyRow(o, 190 + i * 90, r[1], String(r[0]), r[2], r[3], r[4], r[5]));
+    nbtn(root, 'GJ_button_01', null, o(500, h - 70, 190, 90), close, 'OK', 'gold', 60);
+  }
+  function openEditSpecial() { if (!level || !specialOf()) return; stack.length = 0; current = editSpecialDialog; open(editSpecialDialog); }
   // ---------- entry points ----------
   function openPause() { if (!level) return; current = pauseMenu; stack.length = 0; open(pauseMenu); }
   function openSettings() { if (!level) return; stack.length = 0; current = settingsDialog; open(settingsDialog); }
@@ -4512,7 +4539,7 @@ function stopPlay() {
   }, true);
   function openEditGroup() { if (!level || !selObjs().length) return; stack.length = 0; current = editGroupDialog; open(editGroupDialog); }
   function openEditObject() { if (!level || !selObjs().length) return; stack.length = 0; current = editObjectDialog; open(editObjectDialog); }
-  window.dialogsApi = { openEditGroup, openEditObject, openPause, openSettings, close, hdrGet, hdrSet };
+  window.dialogsApi = { openEditSpecial, hasSpecial: () => !!specialOf(), openEditGroup, openEditObject, openPause, openSettings, close, hdrGet, hdrSet };
 })();
 </script>
 <script>
