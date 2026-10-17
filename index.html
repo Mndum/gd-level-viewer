@@ -3352,12 +3352,18 @@ function spriteSize(id) {
   const fi = nm && atlas.frames.get(nm);
   return fi ? [fi.w / fi.sheet.Q, fi.h / fi.sheet.Q] : [30, 30];
 }
+// decoration has no hitbox: whatever the viewer files as decoration, and the pieces named as slope connectors / slope sides (the real slopes are exe type 25)
+function isDecoration(o) {
+  const he = HIT_TABLE[o.id];
+  if (he && he[0] !== 0) return false;
+  if (o.cls === 'deco') return true;
+  return !!he && /slope|connector/i.test(typeof OBJ_NAMES !== 'undefined' && OBJ_NAMES[o.id] || '');
+}
 function simSpecs() {
   const out = [], movers = [], ev = timelineModel().ev, groups = new Set([...ev.move.keys(), ...ev.follow.keys(), ...ev.toggle.keys(), ...ev.rot.keys(), ...ev.scale.keys()]);
   for (const o of level.objs) {
     if (o.raw && o.raw['121'] === '1') continue;                         // "No Touch" (key 121): the object has no collision at all
-    const he = HIT_TABLE[o.id];
-    if (o.cls === 'deco' && (!he || he[0] === 0)) continue;                 // decoration is never touched
+    if (isDecoration(o)) continue;                                           // decoration is never touched
     const b = spriteSize(o.id);
     const mv = groups.size > 0 && o.groups && groupsOf(o).some(g => groups.has(g));
     if (mv) movers.push({ o, index: out.length, dx: 0, dy: 0, hid: false, moving: false, key: '' });
@@ -4408,7 +4414,7 @@ function goptOverlay() {
       if (o.x < x0 - 120 || o.x > x1 + 120 || o.y < y0 - 120 || o.y > y1 + 120) continue;
       if ((o.cls === 'deco' && OBJ_TYPE[o.id] === undefined && !HIT_TABLE[o.id]) || o.cls === 'trigger' || (o.raw && o.raw['121'] === '1')) continue;
       const e = HIT_TABLE[o.id], ty = e ? e[0] : (OBJ_TYPE[o.id] !== undefined ? OBJ_TYPE[o.id] : null);
-      if (o.cls === 'deco' && (ty === 0 || ty === null)) continue;                // decoration (3D line pieces and the like) has no hitbox
+      if (typeof isDecoration === 'function' ? isDecoration(o) : (o.cls === 'deco' && (ty === 0 || ty === null))) continue;                // decoration (3D line pieces, slope connectors and the like) has no hitbox
       if (ty === 7 || (ty === -1 && o.cls !== 'block') || ty === 20) continue;
       let kind = ty === 2 || ty === 47 || o.cls === 'spike' ? 'hazard' : (SPECIAL_TYPES.has(ty) || o.cls === 'portal' || o.cls === 'padorb') ? 'special' : 'solid';
       const col = kind === 'hazard' ? '255,60,60' : kind === 'special' ? '70,235,110' : '70,150,255';
@@ -5442,23 +5448,112 @@ function goptOverlay() {
     numRow(o, 210, 'Channel ID:', () => chAdd, v => { chAdd = Math.max(1, Math.min(999, Math.round(v))); });
     nbtn(root, 'GJ_button_01', null, o(500, 330, 230, 90), () => { if (!chFind(chList(), chAdd)) chSet(chAdd, {}); stack.pop(); current = colorsDialog; chPage = 1e6; open(colorsDialog); }, 'Add', 'gold', 54);
   }
-  // one channel: colour, opacity, blending, the player colour it follows, and copying another channel
+  // one channel: the game's Select Color screen (colour wheel, R G B and hex, opacity, copy colour, blending, the player colours)
+  let chClip = null, chHsv = null;
+  const rgb2hsv = (r, g, b) => { r /= 255; g /= 255; b /= 255; const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn; let h = 0; if (d) { h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; h *= 60; if (h < 0) h += 360; } return [h, mx ? d / mx : 0, mx]; };
+  const hsv2rgb = (h, s, v) => { const c = v * s, x = c * (1 - Math.abs((h / 60) % 2 - 1)), m = v - c; const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x]; return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)]; };
+  // the picker art, loaded once: { img, frames: name -> [x, y, w, h], ready }
+  let pickSheet = null;
+  function pickerSheet(onready) {
+    if (!pickSheet) {
+      pickSheet = { img: new Image(), frames: {}, ready: false, cbs: [] };
+      const img = pickSheet.img;
+      Promise.all([fetch('assets/CCControlColourPickerSpriteSheet-hd.plist').then(r => r.text()), new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = 'assets/CCControlColourPickerSpriteSheet-hd.png'; })]).then(([t]) => {
+        const re = /<key>([^<]+[.]png)<[/]key>\s*<dict>\s*<key>frame<[/]key>\s*<string>[{][{](\d+),(\d+)[}],[{](\d+),(\d+)[}][}]/g; let m;
+        while ((m = re.exec(t))) pickSheet.frames[m[1]] = [+m[2], +m[3], +m[4], +m[5]];
+        pickSheet.ready = true; for (const f of pickSheet.cbs) f();
+      }).catch(() => { });
+    }
+    if (!pickSheet.ready) pickSheet.cbs.push(onready);
+    return pickSheet;
+  }
   function chanDialog(id) {
-    const o = smallDialog(1000, 900, chName(id) + ' (' + id + ')', 80);
+    const again = () => { current = () => chanDialog(id); open(current); };
+    const o = smallDialog(1522, 1012, 'Select Color', 62);
     const e = () => chFind(chList(), id), num = (k, d) => Number(chGet(e(), k, d));
-    const sw = mk('div', 'a', root); put(sw, o(500, 170, 360, 50));
-    sw.style.cssText += `;background:rgb(${num('1', 255)},${num('2', 255)},${num('3', 255)});border:calc(4*var(--k)) solid #000;border-radius:calc(10*var(--k));box-sizing:border-box`;
     const clampTo = (lo, hi, v) => Math.max(lo, Math.min(hi, v));
-    numRow(o, 270, 'Red:', () => num('1', 255), v => chSet(id, { '1': Math.round(clampTo(0, 255, v)) }), 5);
-    numRow(o, 360, 'Green:', () => num('2', 255), v => chSet(id, { '2': Math.round(clampTo(0, 255, v)) }), 5);
-    numRow(o, 450, 'Blue:', () => num('3', 255), v => chSet(id, { '3': Math.round(clampTo(0, 255, v)) }), 5);
-    numRow(o, 540, 'Opacity:', () => num('7', 1), v => chSet(id, { '7': Math.round(clampTo(0, 1, v) * 100) / 100 }), 0.1);
-    numRow(o, 630, 'Player col:', () => Math.max(0, num('4', -1)), v => chSet(id, { '4': clampTo(0, 2, Math.round(v)) || -1 }), 1);
-    const bl = chGet(e(), '5', '0') === '1';
-    txt(root, 'big', 'Blending:', 44, o(250, 720, 380, 60), 'left');
-    nbtn(root, bl ? 'GJ_button_02' : 'GJ_button_04', null, o(700, 720, 150, 80), () => { chSet(id, { '5': bl ? null : 1 }); open(current); }, bl ? 'ON' : 'OFF', 'big', 44);
-    nbtn(root, 'GJ_button_06', null, o(250, 820, 300, 90), () => openOver(() => copyChanDialog(id)), 'Copy...', 'gold', 50);
-    nbtn(root, 'GJ_button_01', null, o(700, 820, 190, 90), back, 'OK', 'gold', 60);
+    const R = num('1', 255), G = num('2', 255), B = num('3', 255);
+    if (!chHsv || chHsv.id !== id || hsv2rgb(chHsv.h, chHsv.s, chHsv.v).join() !== [R, G, B].join()) { const t = rgb2hsv(R, G, B); chHsv = { id, h: chHsv && chHsv.id === id && !t[1] ? chHsv.h : t[0], s: t[1], v: t[2] }; }
+    const sw = mk('div', 'a', root); put(sw, o(90, 113, 100, 150));
+    sw.style.cssText += `;background:rgb(${R},${G},${B});border:calc(3*var(--k)) solid #000;box-sizing:border-box;pointer-events:none`;
+    // number boxes
+    const box = (cx, cy, w, val, onset, maxlen) => {
+      const i = mk('input', 'a', root); put(i, o(cx, cy, w, 62)); i.value = val; i.maxLength = maxlen || 3; i.spellcheck = false;
+      i.style.cssText += ';background:#4d2e1c;border:0;border-radius:calc(8*var(--k));color:#fff;text-align:center;font:900 calc(40*var(--k)) Arial,sans-serif;outline:none;pointer-events:auto;user-select:text;-webkit-user-select:text;text-shadow:calc(2*var(--k)) calc(2*var(--k)) #000;box-sizing:border-box';
+      i.onkeydown = ev => { ev.stopPropagation(); if (ev.key === 'Enter') i.blur(); };
+      i.onchange = () => { onset(i.value); again(); };
+    };
+    [['R:', 100, R, '1'], ['G:', 243, G, '2'], ['B:', 385, B, '3']].forEach(([l, x, v, k]) => { txt(root, 'gold', l, 50, o(x, 270, 140, 56)); box(x + 2, 335, 104, v, s => chSet(id, { [k]: Math.round(clampTo(0, 255, Number(s) || 0)) })); });
+    txt(root, 'gold', 'Hex:', 50, o(243, 418, 200, 56));
+    const hex = [R, G, B].map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
+    box(244, 483, 200, hex, s => { const m = /^#?([0-9a-fA-F]{6})$/.exec(s.trim()); if (m) chSet(id, { '1': parseInt(m[1].slice(0, 2), 16), '2': parseInt(m[1].slice(2, 4), 16), '3': parseInt(m[1].slice(4, 6), 16) }); }, 7);
+    // the wheel: a hue ring around a disc where the left edge is the full colour, the top is white and the bottom black
+    const S = 560, cv = mk('canvas', 'a', root); put(cv, o(760, 443, S, S)); cv.width = cv.height = S; cv.style.pointerEvents = 'auto'; cv.style.cursor = 'crosshair'; cv.style.touchAction = 'none';
+    const cx = S / 2, ro = 270, rd = 188, hrad = 229;
+    // the game's own colour picker art (CCControlColourPickerSpriteSheet): the panel disc whose notch points at the hue, the hue ring and the selector ring
+    const PK = pickerSheet(() => { if (cv.isConnected) drawWheel(); });
+    const sq = document.createElement('canvas'); sq.width = sq.height = 2 * rd;
+    const drawWheel = () => {
+      const g = cv.getContext('2d'); g.clearRect(0, 0, S, S);
+      const ang = (180 - chHsv.h) * Math.PI / 180;                      // hue runs anticlockwise from the left, where red is
+      if (PK.ready) {
+        const F = PK.frames, P = F['menuColourPanelBackground.png'], Rg = F['huePickerBackground.png'], M = F['colourPicker.png'];
+        g.save(); g.translate(cx, cx); g.rotate(ang); const k = 2 * ro / 332; g.drawImage(PK.img, P[0], P[1], P[2], P[3], -166 * k, -P[3] / 2 * k, P[2] * k, P[3] * k); g.restore();
+        const kr = 2 * 254 / Rg[2]; g.drawImage(PK.img, Rg[0], Rg[1], Rg[2], Rg[3], cx - Rg[2] / 2 * kr, cx - Rg[3] / 2 * kr, Rg[2] * kr, Rg[3] * kr);
+        g.fillStyle = '#fff'; g.beginPath(); g.arc(cx, cx, 214, 0, 7); g.fill();
+        PK.mark = (x, y) => { const m = 38; g.drawImage(PK.img, M[0], M[1], M[2], M[3], x - m / 2, y - m / 2, m, m); };
+      } else {
+        g.fillStyle = '#fff'; g.beginPath(); g.arc(cx, cx, ro, 0, 7); g.fill();
+        g.lineWidth = 40;
+        for (let a = 0; a < 360; a++) { g.beginPath(); g.arc(cx, cx, hrad, (a - 90.8) * Math.PI / 180, (a - 89.2) * Math.PI / 180); g.strokeStyle = 'hsl(' + a + ',100%,50%)'; g.stroke(); }
+        g.fillStyle = '#fff'; g.beginPath(); g.arc(cx, cx, 214, 0, 7); g.fill();
+        PK.mark = (x, y) => { g.lineWidth = 5; g.strokeStyle = '#fff'; g.beginPath(); g.arc(x, y, 17, 0, 7); g.stroke(); g.lineWidth = 2; g.strokeStyle = '#555'; g.beginPath(); g.arc(x, y, 19.5, 0, 7); g.stroke(); };
+      }
+      const sg = sq.getContext('2d'), im = sg.createImageData(2 * rd, 2 * rd), d = im.data;
+      for (let y = 0; y < 2 * rd; y++) for (let x = 0; x < 2 * rd; x++) { const c = hsv2rgb(chHsv.h, 1 - x / (2 * rd), 1 - y / (2 * rd)), k = (y * 2 * rd + x) * 4; d[k] = c[0]; d[k + 1] = c[1]; d[k + 2] = c[2]; d[k + 3] = 255; }
+      sg.putImageData(im, 0, 0);
+      g.save(); g.beginPath(); g.arc(cx, cx, rd, 0, 7); g.clip(); g.drawImage(sq, cx - rd, cx - rd); g.restore();
+      PK.mark(cx + Math.cos(ang) * hrad, cx + Math.sin(ang) * hrad);
+      PK.mark(cx - rd + (1 - chHsv.s) * 2 * rd, cx - rd + (1 - chHsv.v) * 2 * rd);
+    };
+    drawWheel();
+    let mode = 0, pend = 0;
+    const apply = () => { pend = 0; const c = hsv2rgb(chHsv.h, chHsv.s, chHsv.v); chSet(id, { '1': c[0], '2': c[1], '3': c[2] }); sw.style.background = `rgb(${c[0]},${c[1]},${c[2]})`; };
+    const pt = ev => { const q = cv.getBoundingClientRect(), sc = S / q.width; return [(ev.clientX - q.left) * sc - cx, (ev.clientY - q.top) * sc - cx]; };
+    const upd = ev => {
+      const p = pt(ev);
+      if (mode === 1) chHsv.h = ((180 - Math.atan2(p[1], p[0]) * 180 / Math.PI) % 360 + 360) % 360;
+      else { chHsv.s = clampTo(0, 1, 1 - (p[0] + rd) / (2 * rd)); chHsv.v = clampTo(0, 1, 1 - (p[1] + rd) / (2 * rd)); }
+      drawWheel(); if (!pend) pend = requestAnimationFrame(apply);
+    };
+    cv.onpointerdown = ev => { const p = pt(ev), d = Math.hypot(p[0], p[1]); mode = d > rd + 6 && d < ro ? 1 : d <= rd + 6 ? 2 : 0; if (!mode) return; cv.setPointerCapture(ev.pointerId); upd(ev); };
+    cv.onpointermove = ev => { if (mode) upd(ev); };
+    cv.onpointerup = () => { if (mode) { mode = 0; again(); } };
+    // Copy / Paste / Default
+    nbtn(root, 'GJ_button_04', null, o(1405, 70, 180, 96), () => { chClip = { r: R, g: G, b: B, a: num('7', 1) }; }, 'Copy', 'gold', 54);
+    nbtn(root, 'GJ_button_04', null, o(1405, 205, 180, 96), () => { if (chClip) { chSet(id, { '1': chClip.r, '2': chClip.g, '3': chClip.b, '7': chClip.a }); again(); } }, 'Paste', 'gold', 54);
+    nbtn(root, 'GJ_button_04', null, o(1405, 340, 180, 96), () => { chSet(id, { '1': 255, '2': 255, '3': 255, '7': 1, '5': null, '4': null, '9': null, '10': null }); again(); }, 'Default', 'gold', 46);
+    // opacity
+    txt(root, 'gold', 'Opacity: ' + num('7', 1).toFixed(2), 58, o(1268, 565, 480, 70));
+    const x0 = 1078, x1 = 1478, tr = mk('div', 'sl', root); put(tr, o((x0 + x1) / 2, 627, x1 - x0, 26));
+    const kn = mk('div', 'kn', root);
+    kn.style.pointerEvents = tr.style.pointerEvents = 'auto'; tr.style.cursor = kn.style.cursor = 'pointer'; tr.style.touchAction = 'none';
+    const px = v => o(x0 + (x1 - x0) * v, 627, 0, 0).cx - DW / 2;
+    const putKnob = v => { kn.style.left = `calc(50% + ${px(v)} * var(--k))`; kn.style.top = `calc(50% + ${o(0, 627, 0, 0).cy - DH / 2} * var(--k))`; };
+    putKnob(clampTo(0, 1, num('7', 1)));
+    let drag = false;
+    const setv = ev => { const q = tr.getBoundingClientRect(); const v = Math.round(clampTo(0, 1, (ev.clientX - q.left) / q.width) * 100) / 100; chSet(id, { '7': v }); putKnob(v); };
+    tr.onpointerdown = ev => { drag = true; tr.setPointerCapture(ev.pointerId); setv(ev); }; tr.onpointermove = ev => { if (drag) setv(ev); };
+    tr.onpointerup = () => { drag = false; again(); };
+    kn.onpointerdown = ev => { drag = true; tr.setPointerCapture(ev.pointerId); };
+    // check boxes
+    const chk = (y, x, text, on, fn, w) => { nbtn(root, on ? 'GJ_button_01' : 'GJ_button_04', null, o(x, y, 70, 70), () => { fn(); again(); }, on ? '+' : '', 'big', 44); txt(root, 'gold', text, 50, o(x + 85 + (w || 300) / 2, y, w || 300, 70), 'left'); };
+    chk(742, 72, 'Copy Color', Number(chGet(e(), '9', 0)) > 0, () => openOver(() => copyChanDialog(id)), 300);
+    chk(845, 72, 'Blending', chGet(e(), '5', '0') === '1', () => chSet(id, { '5': chGet(e(), '5', '0') === '1' ? null : 1 }), 300);
+    const pl = num('4', -1);
+    chk(948, 72, 'Player 1', pl === 1, () => chSet(id, { '4': pl === 1 ? null : 1 }), 200);
+    chk(948, 399, 'Player 2', pl === 2, () => chSet(id, { '4': pl === 2 ? null : 2 }), 200);
+    nbtn(root, 'GJ_button_01', null, o(763, 936, 190, 100), back, 'OK', 'gold', 70);
   }
   // copy another channel's colour, optionally shifted in hue / saturation / brightness (the game's "Copy Color ID" and HSV)
   function copyChanDialog(id) {
