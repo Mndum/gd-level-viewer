@@ -2569,7 +2569,7 @@ function foldVec(evs, T, start) {
   return at(T);
 }
 // ---- colour channels that copy another channel (header or Colour trigger), the player's colours, and hue/saturation/brightness ----
-const PLAYER_COL = { 1: [125, 255, 0], 2: [0, 255, 255] };
+const PLAYER_COL = { 1: [185, 0, 255], 2: [125, 0, 125] };                // the player's two icon colours (the game's colours 13 and 24 from the save this page is used with)
 function hsvApply(c, h) {
   if (!h) return [c[0], c[1], c[2]];
   const r = c[0] / 255, g = c[1] / 255, b = c[2] / 255, mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
@@ -3252,13 +3252,20 @@ Object.assign(EXTRA_LAYERS, {"331":"lighttriangle_01_02_color_001.png","333":"li
 let OBJ_NAMES = {};
 fetch('assets/objects.json').then(r => r.json()).then(j => { OBJ_NAMES = j; if (typeof draw === 'function') draw(); }).catch(() => { });
 // the plain sprite of a slope that is only an outline (blockOutline_*) is white; the black fill is its child sprite
-function blackNamed(o) { const n = OBJ_NAMES[o.id]; return !!n && (/black/i.test(n) || /^(large|medium|small) (saw|spike) blade$/i.test(n)) && !/colou?red|pulsing|glow/i.test(n); }
+function blackNamed(o) { const n = OBJ_NAMES[o.id]; return !!n && (/(^|[^a-z])black([^a-z]|$)/i.test(n) || /^(large|medium|small) (saw|spike) blade$/i.test(n)) && !/colou?red|pulsing|glow/i.test(n); }
+// the black objects are not colourable: a colour set on one in the file does not apply (the game draws them black)
+function applyBlackNames() {
+  if (typeof level === 'undefined' || !level || !Object.keys(OBJ_NAMES).length || level._bn === level.objs.length) return;
+  level._bn = level.objs.length;
+  for (const o of level.objs) if (o.col && blackNamed(o)) { o.colRaw = o.col; o.col = 0; }
+}
+{ const _draw = draw; draw = function () { applyBlackNames(); _draw(); }; }
 function defaultChildFor(o) { const c = CDEF[o.id]; if (c && c[0]) return c[0]; return blackNamed(o) ? 1010 : defaultMainFor(o); }
 function defaultMainFor(o) {
   const c = CDEF[o.id]; if (c && c[0]) return c[0];
   if (/^spike_[0-9]+_001/.test(ID_FRAMES[o.id] || '')) return 0;                  // the standard spikes are drawn as they are in the sheet: black body, white outline
   if (/^(blockOutline|plank_01_square)/.test(ID_FRAMES[o.id] || '')) return 0;      // the outline / edge-line sprite is white; the black part is the colour sprite
-  if (OBJ_NAMES[o.id] && /\bblack\b/i.test(OBJ_NAMES[o.id]) && !/colou?red|pulsing|glow/i.test(OBJ_NAMES[o.id])) return 1010;
+  if (blackNamed(o)) return 1010;
   const n = ID_FRAMES[o.id] || '';
   if (/^lighttriangle_01_/.test(n)) return 1010;                    // the plain Black Slope
   return /^triangle_/.test(n) ? 1004 : 0;
@@ -3475,13 +3482,14 @@ function playUpdate(delta) {
 
 // ---- drawing the cube (the real icon when it can be loaded, else a plain square) ----
 // the icon atlases of each vehicle; the frames are drawn in this order with the player's colours (green, cyan, white)
+const hexOf = c => c.map(v => v.toString(16).padStart(2, '0')).join('');
 const ICON_SETS = {
-  cube: { atlas: 'player_01', parts: [['player_01_001.png', '7dff00'], ['player_01_2_001.png', '00ffff'], ['player_01_extra_001.png', 'ffffff']] },
-  ship: { atlas: 'ship_01', parts: [['ship_01_001.png', '7dff00'], ['ship_01_2_001.png', '00ffff']], rider: 0.55, riderY: 9 },
-  ufo: { atlas: 'bird_01', parts: [['bird_01_001.png', '7dff00'], ['bird_01_2_001.png', '00ffff'], ['bird_01_3_001.png', 'ffffff']], rider: 0.5, riderY: 8 },
-  ball: { atlas: 'player_ball_01', parts: [['player_ball_01_001.png', '7dff00'], ['player_ball_01_2_001.png', '00ffff']] },
-  wave: { atlas: 'dart_01', parts: [['dart_01_001.png', '7dff00'], ['dart_01_2_001.png', '00ffff']] },
-  swing: { atlas: 'swing_01', parts: [['swing_01_001.png', '7dff00'], ['swing_01_2_001.png', '00ffff'], ['swing_01_extra_001.png', 'ffffff']] }
+  cube: { atlas: 'player_01', parts: [['player_01_001.png', hexOf(PLAYER_COL[1])], ['player_01_2_001.png', hexOf(PLAYER_COL[2])], ['player_01_extra_001.png', 'ffffff']] },
+  ship: { atlas: 'ship_01', parts: [['ship_01_001.png', hexOf(PLAYER_COL[1])], ['ship_01_2_001.png', hexOf(PLAYER_COL[2])]], rider: 0.55, riderY: 9 },
+  ufo: { atlas: 'bird_01', parts: [['bird_01_001.png', hexOf(PLAYER_COL[1])], ['bird_01_2_001.png', hexOf(PLAYER_COL[2])], ['bird_01_3_001.png', 'ffffff']], rider: 0.5, riderY: 8 },
+  ball: { atlas: 'player_ball_01', parts: [['player_ball_01_001.png', hexOf(PLAYER_COL[1])], ['player_ball_01_2_001.png', hexOf(PLAYER_COL[2])]] },
+  wave: { atlas: 'dart_01', parts: [['dart_01_001.png', hexOf(PLAYER_COL[1])], ['dart_01_2_001.png', hexOf(PLAYER_COL[2])]] },
+  swing: { atlas: 'swing_01', parts: [['swing_01_001.png', hexOf(PLAYER_COL[1])], ['swing_01_2_001.png', hexOf(PLAYER_COL[2])], ['swing_01_extra_001.png', 'ffffff']] }
 };
 const PLAYER_FRAMES = ICON_SETS.cube.parts.map(x => x[0]);
 async function fetchIconFile(name) {
@@ -3559,7 +3567,7 @@ function drawOne(x, yLevel, g, rot, mode, mini, alpha, half) {
   if (set.state === 'ready' || (set === ICON_SETS.cube && set.state === 'ready')) drawn = drawIconSet(set, k, mi, 0);
   if (!drawn) {
     const h = half;
-    ctx.fillStyle = '#7dff00'; ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(1, 2 * k);
+    ctx.fillStyle = '#' + hexOf(PLAYER_COL[1]); ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(1, 2 * k);
     ctx.beginPath();
     if (mode === 'ball') ctx.arc(0, 0, h * k, 0, 7);
     else if (mode === 'wave') { ctx.moveTo(-h * k, h * k * 0.7); ctx.lineTo(h * 1.2 * k, 0); ctx.lineTo(-h * k, -h * k * 0.7); ctx.closePath(); }
