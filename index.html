@@ -2397,6 +2397,7 @@ function buildTimeline() {
   const segAt = X => { let s = segs[0]; for (const g of segs) { if (g.x0 <= X) s = g; else break; } return s; };
   const tOf = X => { if (X <= 0) return 0; const s = segAt(X); return s.t0 + (X - s.x0) / s.v; };
   const speedAt = X => segAt(X).v;
+  const xOf = T => { let s = segs[0]; for (const g of segs) { if (g.t0 <= T) s = g; else break; } return s.x0 + Math.max(0, T - s.t0) * s.v; };   // where the player is at time T
 
   const ev = { chan: new Map(), pulseC: new Map(), pulseG: new Map(), move: new Map(), follow: new Map(), alpha: new Map(), toggle: new Map(), rot: new Map(),
                scale: new Map(), stops: [], zoom: [], coff: [], crot: [], sh: new Map(), shock: [] };
@@ -2436,7 +2437,9 @@ function buildTimeline() {
           }
           dx = tx; dy = ty;
         }
-        push(ev.move, g, { t, src: groupsOf(o), dur, e, rate, dx, dy }); return;
+        // Lock to player X (58) or to camera X (141): the group keeps pace with the player along x for the duration, instead of moving by a fixed amount
+        const lockX = o.raw['58'] === '1' || o.raw['141'] === '1';
+        push(ev.move, g, { t, src: groupsOf(o), dur, e, rate, dx: lockX ? 0 : dx, dy, lockX, px0: o.x, xOf }); return;
       }
       case 1912: {                                               // Random: key 10 = chance of group 51, otherwise group 71 (a preview can't roll dice, so it shows the likelier one)
         const pick = rawNum(o, '10', 50) >= 50 ? g : rawNum(o, '71', 0), d = rawNum(o, '63', 0);
@@ -2586,6 +2589,7 @@ function moveDisp(ev, g, T, depth) {
     if (e.t > T) break;
     const k = ease(e.e, e.rate, e.dur > 0 ? clampN(runTime(ev, e, T) / e.dur, 0, 1) : 1);
     dx += e.dx * k; dy += e.dy * k;
+    if (e.lockX) dx += e.xOf(Math.min(T, e.t + e.dur)) - e.px0;                  // (player x at the end of the lock, or now) - where the lock began
   }
   if (depth < 6) for (const f of (ev.follow.get(g) || [])) {
     if (f.t > T || f.dur <= 0) continue;
