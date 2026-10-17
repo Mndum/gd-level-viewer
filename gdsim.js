@@ -449788,7 +449788,7 @@ const SIM = (() => {
       if (!fresh) templates.set(id, t);
       return t;
     }
-    sim.probe = (id, bw, bh) => { const t = template(id, bw, bh, true); return t.none ? null : { type: t.type, mx: t.mx, my: t.my, w: t.exeW, h: t.exeH, radius: t.radius }; };
+    sim.probe = (id, bw, bh) => { const t = template(id, bw, bh, true); return t.none ? null : { type: t.type, mx: t.mx, my: t.my, w: t.exeW, h: t.exeH, radius: t.radius, flagged: t.noTouchFlag }; };
     function place(t, sp, uid) {
       const o = s.pool.alloc(SLOT), r = M.find(o, SLOT);
       r.u8.set(t.bytes, o - r.lo);
@@ -449955,7 +449955,8 @@ const SIM = (() => {
     };
     sim.setSpeed = function (v) { run(F.speed, { rcx: L.player, r8: 0 }, v); run(F.speed, { rcx: L.player2, r8: 0 }, v); };
     // one 1/240 s step (dtF = 0.25 in the game's 1/60 s units)
-    sim.step = function (dtF) {
+    // like GJBaseGameLayer::update: the physics runs in the fixed steps, the camera is updated once per frame after them (noCam skips it here)
+    sim.step = function (dtF, noCam) {
       M.wr32(L.layer + 0x3e0, (Number(M.rd32(L.layer + 0x3e0)) + 1) >>> 0);
       M.wrf64(L.layer + LO.time, sim.time); M.wr64(L.player + 0xaa8, M.rd64(L.layer + LO.time));
       window(s.rdpt(L.player + s.POS)[0]);
@@ -449969,10 +449970,11 @@ const SIM = (() => {
         X[2].f[0] = dtF; run(F.collide, { rcx: L.layer, rdx: L.player2, r9: 0 }, dtF);
         if (M.rd8(L.player2 + 0x98c) !== 0n) { sim.died = true; sim.deathObj = 0; }
       }
-      run(F.camera, { rcx: L.layer }, dtF);
+      if (!noCam) run(F.camera, { rcx: L.layer }, dtF);
       if (M.rd8(L.player + 0x98c) !== 0n) { sim.died = true; sim.deathObj = 0; }       // PlayLayer::update destroys the player when the wall flag is set after the collision pass
       sim.time += dtF / 60;
     };
+    sim.updateCamera = dtF => { run(F.camera, { rcx: L.layer }, dtF); };
     sim.push = () => { run(F.push, { rcx: L.player, rdx: 1 }); if (M.rd8(L.layer + 0x422) !== 0n) run(F.push, { rcx: L.player2, rdx: 1 }); };
     sim.release = () => { run(F.release, { rcx: L.player, rdx: 1 }); if (M.rd8(L.layer + 0x422) !== 0n) run(F.release, { rcx: L.player2, rdx: 1 }); };
     sim.dual = () => M.rd8(L.layer + 0x422) !== 0n;

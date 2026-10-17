@@ -3010,8 +3010,8 @@ function levelGroundId() {
   const n = m ? Number(m[1]) : 1;
   return n >= 1 && n <= 22 ? n : 1;
 }
-function drawGroundPicture(W, H, gy) {
-  if (!level || gy >= H) return;
+function drawGroundPicture(W, H, gy, up) {
+  if (!level || (up ? gy <= 0 : gy >= H)) return;       // up: a ceiling, the picture hangs above the line, mirrored
   const id = levelGroundId();
   if (!(grPic.id === id && grPic.img) && grPic.loading !== id) {
     grPic.loading = id;
@@ -3023,7 +3023,7 @@ function drawGroundPicture(W, H, gy) {
   const c = chan(1001) || { r: 255, g: 255, b: 255 };
   if (!grPic.img) {                                         // no tile image: a plain band in the ground colour
     ctx.fillStyle = `rgb(${Math.round(c.r)},${Math.round(c.g)},${Math.round(c.b)})`;
-    ctx.fillRect(0, Math.max(0, gy), W, Math.min(H - Math.max(0, gy), 128 * view.zoom));
+    if (up) ctx.fillRect(0, gy - 128 * view.zoom, W, 128 * view.zoom); else ctx.fillRect(0, Math.max(0, gy), W, Math.min(H - Math.max(0, gy), 128 * view.zoom));
     return;
   }
   const key = id + '|' + Math.round(c.r / 4) + '|' + Math.round(c.g / 4) + '|' + Math.round(c.b / 4) + '|' + assetQuality;
@@ -3044,6 +3044,11 @@ function drawGroundPicture(W, H, gy) {
   const [x0w] = toScreen(0, 0);
   let x = x0w % size; if (x > 0) x -= size;
   const top = Math.max(gy, 0);
+  if (up) {
+    ctx.save(); ctx.translate(0, Math.round(gy)); ctx.scale(1, -1);
+    for (let xx = x; xx < W; xx += size) ctx.drawImage(grPic.tint, Math.round(xx), 0, Math.ceil(size) + 1, Math.ceil(size));
+    ctx.restore(); return;
+  }
   for (let xx = x; xx < W; xx += size) ctx.drawImage(grPic.tint, Math.round(xx), Math.round(gy), Math.ceil(size) + 1, Math.ceil(size));
 }
 // ---- Text objects (id 914): the level stores the words (key 31, base64); the font is the level's own setting (kA18) ----
@@ -3455,12 +3460,12 @@ function applyMovers() {
     m.moving = changed;
   }
 }
-function simStep(m, dtF) {
+function simStep(m, dtF, noCam) {
   const p = play, sim = p.sim, spd = m.speedAt(Math.max(0, p.x)), f = speedFactor(spd);
   if (p.movers.length) applyMovers();
   if (f !== p.spdF) { sim.setSpeed(f); p.spdF = f; }
   if (p.hold && !p.pushed) { sim.push(); p.pushed = true; } else if (!p.hold && p.pushed) { sim.release(); p.pushed = false; }
-  sim.step(dtF);
+  sim.step(dtF, noCam);
   simSync(); visualRotation(p, dtF, spd); if (p.p2) visualRotation(p.p2, dtF, spd);
   p.camOut = sim.camera();
   const mir = p.mirror ? 'scaleX(-1)' : ''; if (canvas.style.transform !== mir) { canvas.style.transform = mir; const g = document.getElementById('gl'); if (g) g.style.transform = mir; }
@@ -3478,15 +3483,17 @@ function playUpdate(delta) {
   p.acc = Math.min((p.acc || 0) + delta, 0.04);
   const realHold = p.hold, tapped = p.tap; p.tap = false;
   if (tapped && !p.hold) p.hold = true;                             // a click that began and ended inside one frame is still a jump
-  let first = true;
+  let first = true, stepped = false;
   const t0 = performance.now();
   while (p.acc >= STEP && !p.dead) {
-    simStep(m, dtF);
+    simStep(m, dtF, true);
+    stepped = true;
     p.acc -= STEP;
     if (performance.now() - t0 > 9) { p.acc = 0; break; }                // never hold a frame for more than ~9 ms: a slow machine plays in slow motion instead of freezing
     if (first) { first = false; p.hold = realHold; }
   }
   p.hold = realHold;
+  if (stepped) { p.sim.updateCamera(dtF); p.camOut = p.sim.camera(); }       // GJBaseGameLayer::updateCamera, once per frame after the steps, as the game does
   if (p.x > m.maxX) { p.done++; if (p.practice) p.cps = []; else p.best = 100; playReset(); }
   if (!p.dead) { p.press = false; if (!p.practice) p.best = Math.max(p.best, Math.min(100, Math.floor(Math.max(0, p.x) / m.maxX * 100))); }
   camApply();
@@ -3548,23 +3555,26 @@ function drawIconSet(set, k, scale, dy) {
   });
   return drawn;
 }
-// a vehicle section's floor and ceiling (the ground picture only knows the floor at 0)
+// a vehicle section's floor and ceiling: both look like the ground (the ceiling is the ground picture mirrored)
 function drawSection() {
   const p = play;
   if (!(p.floorY > 0 || p.ceilY != null)) return;
-  const k = view.zoom, W = canvas._w;
+  const W = canvas._w, H = canvas._h;
+  const lc = (typeof chan === 'function' && chan(1002)) || { r: 255, g: 255, b: 255 };
   ctx.save();
-  ctx.fillStyle = 'rgba(8,14,40,.92)'; ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(2, 3 * k);
-  if (p.floorY > 0) {
-    const y = toScreen(0, p.floorY)[1];
-    ctx.fillRect(0, y, W, canvas._h - y + 4); ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-  }
-  if (p.ceilY != null) {
-    const y = toScreen(0, p.ceilY)[1];
-    ctx.fillRect(0, -4, W, y + 4); ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-  }
+  ctx.strokeStyle = `rgb(${Math.round(lc.r)},${Math.round(lc.g)},${Math.round(lc.b)})`; ctx.lineWidth = 2;
+  const one = (wy, up) => {
+    const y = toScreen(0, wy)[1];
+    ctx.fillStyle = '#000';
+    if (up) ctx.fillRect(0, -4, W, y + 4); else ctx.fillRect(0, y, W, H - y + 4);
+    if (typeof drawGroundPicture === 'function') drawGroundPicture(W, H, y, up);
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  };
+  if (p.floorY > 0) one(p.floorY, false);
+  if (p.ceilY != null) one(p.ceilY, true);
   ctx.restore();
 }
+
 function drawOne(x, yLevel, g, rot, mode, mini, alpha, half) {
   const [sx, sy] = toScreen(x, yLevel);
   const k = view.zoom, mi = mini ? 0.6 : 1;
