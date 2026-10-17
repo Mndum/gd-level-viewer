@@ -2423,11 +2423,12 @@ function buildTimeline() {
           r: rawNum(o, '7', 255), g: rawNum(o, '8', 255), b: rawNum(o, '9', 255), main: o.raw['65'] === '1', detail: o.raw['66'] === '1' });
         return;
       case 901: {
-        let dx = rawNum(o, '28', 0), dy = rawNum(o, '29', 0);
+        let dx = rawNum(o, '28', 0), dy = rawNum(o, '29', 0), dyn = null;
         if (o.raw['100'] === '1' || o.raw['394'] === '1') {           // Target mode (100): the group goes to where the target group (71) sits; Direction mode (394): it goes towards it by a distance (396)
           const tg = first.get(rawNum(o, '71', 0)), ctr = first.get(rawNum(o, '395', 0)) || first.get(g);
           if (!tg || !ctr) return;
           let tx = tg.x - ctr.x, ty = tg.y - ctr.y;
+          dyn = { tgtG: rawNum(o, '71', 0), ctrG: rawNum(o, '395', 0) || g, tg, ctr, dir: o.raw['394'] === '1', want: rawNum(o, '396', 0), axis: o.raw['394'] === '1' ? 0 : rawNum(o, '101', 0) };
           if (o.raw['394'] === '1') {
             const len = Math.hypot(tx, ty), want = rawNum(o, '396', 0);
             if (len > 0) { tx *= want / len; ty *= want / len; }
@@ -2438,8 +2439,8 @@ function buildTimeline() {
           dx = tx; dy = ty;
         }
         // Lock to player X (58) or to camera X (141): the group keeps pace with the player along x for the duration, instead of moving by a fixed amount
-        const lockX = o.raw['58'] === '1' || o.raw['141'] === '1';
-        push(ev.move, g, { t, src: groupsOf(o), dur, e, rate, dx: lockX ? 0 : dx, dy, lockX, px0: o.x, xOf }); return;
+        const lockX = o.raw['58'] === '1' || o.raw['141'] === '1', lockY = o.raw['59'] === '1' || o.raw['142'] === '1';
+        push(ev.move, g, { t, src: groupsOf(o), dur, e, rate, dx: lockX ? 0 : dx, dy: lockY ? 0 : dy, lockX, lockY, px0: o.x, xOf, dyn, grp: g }); return;
       }
       case 1912: {                                               // Random: key 10 = chance of group 51, otherwise group 71 (a preview can't roll dice, so it shows the likelier one)
         const pick = rawNum(o, '10', 50) >= 50 ? g : rawNum(o, '71', 0), d = rawNum(o, '63', 0);
@@ -2583,13 +2584,48 @@ function runTime(ev, e, T) {
   return running ? acc + (T - last) : acc;
 }
 // how far a group has moved by time T: its own move triggers plus whatever it has followed (depth-limited so loops end)
-function moveDisp(ev, g, T, depth) {
+// where the player has been (x -> y), recorded while playing, so a "lock to player Y" move can follow it
+const PLAYER_TRACE = new Map();
+const traceY = x => { const k = Math.round(x / 2); for (let d = 0; d < 60; d++) { const a = PLAYER_TRACE.get(k - d), b = PLAYER_TRACE.get(k + d); if (a !== undefined) return a; if (b !== undefined) return b; } return null; };
+// the exe's per-step move (0x334310) recomputes the vector from the group's centre to the target every step and moves by the eased fraction of what is left,
+// so a target (or a centre) that is itself moving by other triggers is followed. Replayed here in small steps.
+function dynMove(ev, e, T, depth) {
+  const end = Math.min(T, e.t + (e.dur > 0 ? e.dur : 0)), d = e.dyn;
+  if (e._c && e._c.T === T) return e._c.v;
+  let dx = 0, dy = 0, pk = 0, ti = e.t;
+  const steps = Math.min(900, Math.max(1, Math.ceil((end - e.t) * 30)));
+  for (let i = 1; i <= steps; i++) {
+    ti = e.t + (end - e.t) * i / steps;
+    const k = e.dur > 0 ? ease(e.e, e.rate, clampN(runTime(ev, e, ti) / e.dur, 0, 1)) : 1;
+    const tp = moveDisp(ev, d.tgtG, ti, depth + 1), cp = moveDisp(ev, d.ctrG, ti, depth + 1, e);
+    let vx = d.tg.x + tp[0] - (d.ctr.x + cp[0] + dx), vy = d.tg.y + tp[1] - (d.ctr.y + cp[1] + dy);
+    if (d.dir) { const len = Math.hypot(vx, vy); if (len > 0) { vx *= d.want / len; vy *= d.want / len; } const f = k - pk; dx += vx * f; dy += vy * f; }
+    else {
+      if (d.axis === 1) vy = 0; else if (d.axis === 2) vx = 0;
+      const f = pk >= 1 ? 0 : (k - pk) / (1 - pk); dx += vx * f; dy += vy * f;
+    }
+    pk = k;
+  }
+  e._c = { T, v: [dx, dy] };
+  return e._c.v;
+}
+function moveDisp(ev, g, T, depth, skip) {
   let dx = 0, dy = 0;
-  for (const e of (ev.move.get(g) || [])) {
+  if (depth > 5) return [0, 0];
+  const mine = ev.move.get(g) || [];
+  for (const e of mine) {
     if (e.t > T) break;
+    if (e === skip) continue;
+    if (e.dyn && (ev.move.has(e.dyn.tgtG) || ev.follow.has(e.dyn.tgtG) || mine.length > 1)) {
+      const v = dynMove(ev, e, T, depth); dx += v[0]; dy += v[1]; continue;
+    }
     const k = ease(e.e, e.rate, e.dur > 0 ? clampN(runTime(ev, e, T) / e.dur, 0, 1) : 1);
     dx += e.dx * k; dy += e.dy * k;
     if (e.lockX) dx += e.xOf(Math.min(T, e.t + e.dur)) - e.px0;                  // (player x at the end of the lock, or now) - where the lock began
+    if (e.lockY) {                                                                // the same along y, from the recorded run of the player (nothing to follow before one exists)
+      const y0 = traceY(e.px0), y1 = traceY(e.xOf(Math.min(T, e.t + e.dur)));
+      if (y0 !== null && y1 !== null) dy += y1 - y0;
+    }
   }
   if (depth < 6) for (const f of (ev.follow.get(g) || [])) {
     if (f.t > T || f.dur <= 0) continue;
@@ -2599,6 +2635,7 @@ function moveDisp(ev, g, T, depth) {
   return [dx, dy];
 }
 function stateAt(X) {
+  if (window.play && window.play.active) PLAYER_TRACE.set(Math.round(window.play.x / 2), window.play.ym);
   if (tl.cache && tl.cacheX === X) return tl.cache;
   const m = timelineModel(), T = m.tOf(X), ev = m.ev;
   const channels = new Map();
