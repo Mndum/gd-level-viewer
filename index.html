@@ -340,17 +340,15 @@ function parseChannels(headerStr) {
 // The game's own defaults are 3 for most objects and 5 for portals, pads and orbs.
 // default draw layer / order per object: decoded from the game's own setup tables (assets/zdefaults.json: id -> [z-order, z-layer])
 let ZDEF = {};
-function defaultZLayer(id) {
-  const z = ZDEF[id];
-  if (z && z[1] !== null && z[1] !== undefined) return z[1];
-  const c = classify(id);
-  return (c === 'portal' || c === 'padorb') ? 5 : 3;
-}
-function defaultZOrder(id) { const z = ZDEF[id]; return z && z[0] ? z[0] : 0; }
+// the exe's own table (GameObject constructor: z order 2, z layer 5; GameObject::customSetup overrides it per id). A level's key 24 / 25 of 0 means "use the default".
+function defaultZLayer(id) { const z = ZDEF[id]; return z && z[1] ? z[1] : 5; }
+function defaultZOrder(id) { const z = ZDEF[id]; return z ? z[0] : 2; }
+function zLayerOf(p, id) { const v = p['24'] === undefined ? 0 : Number(p['24']); return v ? v : defaultZLayer(id); }
+function zOrderOf(p, id) { const v = p['25'] === undefined ? 0 : Number(p['25']); return v ? v : defaultZOrder(id); }
 fetch('assets/zdefaults.json').then(r => r.json()).then(j => {
   ZDEF = j;
   if (typeof level !== 'undefined' && level) {
-    for (const o of level.objs) { if (o.raw['24'] === undefined) o.zl = defaultZLayer(o.id); if (o.raw['25'] === undefined) o.zo = defaultZOrder(o.id); }
+    for (const o of level.objs) { o.zl = zLayerOf(o.raw, o.id); o.zo = zOrderOf(o.raw, o.id); }
     level.zSorted = level.objs.slice().sort((a, b) => (a.zl - b.zl) || (a.zo - b.zo) || (a.idx - b.idx));
     if (typeof draw === 'function') draw();
   }
@@ -379,8 +377,8 @@ function parseLevel(levelStr) {
       flipX: p['4'] === '1', flipY: p['5'] === '1',
       col: p['21'] !== undefined ? Number(p['21']) : 0,
       col2: p['22'] !== undefined ? Number(p['22']) : 0,
-      zl: p['24'] !== undefined ? Number(p['24']) : defaultZLayer(id),
-      zo: p['25'] !== undefined ? Number(p['25']) : defaultZOrder(id),
+      zl: zLayerOf(p, id),
+      zo: zOrderOf(p, id),
       idx: objs.length,
       groups: p['57'] || '',
       raw: p, fields: f, src: parts[i], dirty: false, scaleDirty: false, uni
@@ -4765,8 +4763,8 @@ function goptOverlay() {
   function syncDerived(o) {
     const p = o.raw;
     o.col = p['21'] !== undefined ? Number(p['21']) : 0; o.col2 = p['22'] !== undefined ? Number(p['22']) : 0;
-    o.zl = p['24'] !== undefined ? Number(p['24']) : (typeof defaultZLayer === 'function' ? defaultZLayer(o.id) : o.zl);
-    o.zo = p['25'] !== undefined ? Number(p['25']) : 0; o.groups = p['57'] || '';
+    o.zl = zLayerOf(p, o.id);
+    o.zo = zOrderOf(p, o.id); o.groups = p['57'] || '';
   }
   const rawSnap = o => ({ o, raw: Object.assign({}, o.raw), fields: o.fields ? o.fields.slice() : [] });
   function opRaw(objs, apply, name) {
@@ -5314,7 +5312,7 @@ function goptOverlay() {
     } else if (eoTab === 2) {
       groupBody(o, 320);
     } else {
-      const cur = rawNumOf(p, '24', typeof defaultZLayer === 'function' ? defaultZLayer(p.id) : 3);
+      const cur = zLayerOf(p, p.id);
       Z_LAYERS.forEach(([n, v], i) => nbtn(root, v === cur ? 'GJ_button_02' : 'GJ_button_04', null, o(100 + i * 100, 300, 92, 76), () => { A.editRaw(selObjs(), ob => A.setKey(ob, '24', v), 'z layer'); open(current); }, n, 'big', 36));
       keyRow(o, 410, 'Z Order:', '25', 0, -100, 100);
       keyRow(o, 500, 'Editor L1:', '20', 0, 0, 9999);
