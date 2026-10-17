@@ -3289,6 +3289,7 @@ function buildPlayWorld() {
     }
   };
   for (const o of level.objs) {
+    if (o.raw && o.raw['121'] === '1') continue;                         // "No Touch" (key 121): the object has no collision at all
     if (SAW_WIDTH[o.id]) {
       const r = 0.3 * SAW_WIDTH[o.id] * Math.max(Math.abs(o.sx), Math.abs(o.sy)), b = { l: o.x - r, r: o.x + r, b: o.y - r, t: o.y + r, o, st: 0, circle: { x: o.x, y: o.y, r } };
       put(w.hazards, b);
@@ -4555,7 +4556,7 @@ function goptOverlay() {
     ctx.save(); ctx.lineWidth = 2;
     for (const o of level.objs) {
       if (o.x < x0 - 120 || o.x > x1 + 120 || o.y < y0 - 120 || o.y > y1 + 120) continue;
-      if ((o.cls === 'deco' && OBJ_TYPE[o.id] === undefined && !HIT_TABLE[o.id]) || o.cls === 'trigger') continue;
+      if ((o.cls === 'deco' && OBJ_TYPE[o.id] === undefined && !HIT_TABLE[o.id]) || o.cls === 'trigger' || (o.raw && o.raw['121'] === '1')) continue;
       const e = HIT_TABLE[o.id], ty = e ? e[0] : (OBJ_TYPE[o.id] !== undefined ? OBJ_TYPE[o.id] : null);
       if (ty === 7 || (ty === -1 && o.cls !== 'block') || ty === 20) continue;
       let kind = ty === 2 || ty === 47 || o.cls === 'spike' ? 'hazard' : (SPECIAL_TYPES.has(ty) || o.cls === 'portal' || o.cls === 'padorb') ? 'special' : 'solid';
