@@ -3272,7 +3272,7 @@ function defaultMainFor(o) {
 // and the follow camera. The page only builds the level for it, feeds it the buttons and the speed portals' speeds, and draws what comes out.
 window.play = {
   active: false, dead: 0, attempt: 0, x: -30, ym: 15, yv: 0, g: 1, onGround: true, rot: 0, hold: false, press: false, tap: false, raf: 0, last: 0, camOut: null,
-  best: 0, done: 0, icon: null, shown: 0, mode: 'cube', mini: false, floorY: 0, ceilY: null, practice: false, cps: [], sim: null, pushed: false, spdF: 0.9, acc: 0
+  best: 0, done: 0, icon: null, shown: 0, mode: 'cube', mini: false, floorY: 0, ceilY: null, practice: false, cps: [], sim: null, pushed: false, spdF: 0.9, acc: 0, movers: [], p2: null, mirror: false
 };
 const PLAYER = { startX: -30 };
 // the level header's start mode (kA2)
@@ -3342,12 +3342,15 @@ function spriteSize(id) {
   return fi ? [fi.w / fi.sheet.Q, fi.h / fi.sheet.Q] : [30, 30];
 }
 function simSpecs() {
-  const out = [];
+  const out = [], movers = [], ev = timelineModel().ev, groups = new Set([...ev.move.keys(), ...ev.follow.keys(), ...ev.toggle.keys()]);
   for (const o of level.objs) {
     if (o.raw && o.raw['121'] === '1') continue;                         // "No Touch" (key 121): the object has no collision at all
     const b = spriteSize(o.id);
-    out.push({ id: o.id, x: o.x, y: o.y, rot: o.rot || 0, sx: o.sx, sy: o.sy, fx: o.flipX, fy: o.flipY, bw: b[0], bh: b[1] });
+    const mv = groups.size > 0 && o.groups && groupsOf(o).some(g => groups.has(g));
+    if (mv) movers.push({ o, index: out.length, dx: 0, dy: 0, hid: false, moving: false });
+    out.push({ id: o.id, x: o.x, y: o.y, rot: o.rot || 0, sx: o.sx, sy: o.sy, fx: o.flipX, fy: o.flipY, bw: b[0], bh: b[1], mv: !!mv });
   }
+  play.movers = movers;
   return out;
 }
 function startState() {                                            // the header's start mode (kA2), mini (kA3) and upside-down (kA11)
@@ -3364,13 +3367,13 @@ function camApply() {
   view.zoom = canvas._h / H; view.cx = o.x + W / 2; view.cy = o.y + H / 2 - 90;
 }
 // what the player looks like on screen is not part of the physics: the exe turns the icon with timed actions, so the spin is drawn from the motion
-function visualRotation(dtF, spd) {
-  const p = play, mode = p.mode, dx = spd / 60 * dtF;
+function visualRotation(p, dtF, spd) {
+  const mode = p.mode, dx = spd / 60 * dtF;
   const ang = Math.atan2(p.yv * 0.9, spd / 60) * 180 / Math.PI;
   if (mode === 'ship' || mode === 'swing') p.rot += (-Math.max(-70, Math.min(70, ang)) - p.rot) * Math.min(1, dtF * 0.25);
   else if (mode === 'ufo') p.rot += (-Math.max(-60, Math.min(60, ang)) * 0.35 - p.rot) * Math.min(1, dtF * 0.2);
   else if (mode === 'wave') p.rot = -(p.yv >= 0 ? 1 : -1) * (p.mini ? 63.4 : 45);
-  else if (mode === 'ball') p.rot += dx / playHalf() * 180 / Math.PI;
+  else if (mode === 'ball') p.rot += dx / (p.mini ? 9 : 15) * 180 / Math.PI;
   else if (mode === 'robot' || mode === 'spider') p.rot += (0 - p.rot) * Math.min(1, dtF * 0.5);
   else if (!p.onGround) p.rot += 7.5 * dtF * p.g;
   else p.rot += (Math.round(p.rot / 90) * 90 - p.rot) * Math.min(1, dtF * 0.4725);
@@ -3380,6 +3383,8 @@ function simSync() {
   p.x = st.x; p.g = st.upsideDown ? -1 : 1; p.ym = (st.y - 90) * p.g; p.mode = st.mode; p.mini = st.scale < 0.95; p.onGround = st.onGround;
   p.yv = st.vy * p.g;
   p.floorY = b ? b.floor - 90 : 0; p.ceilY = b ? b.ceil - 90 : null;
+  if (p.sim.dual()) { const q = p.sim.state2(); const o = p.p2 || { rot: 0 }; Object.assign(o, q, { mini: q.scale < 0.95, g: q.upsideDown ? -1 : 1, yv: q.vy * (q.upsideDown ? -1 : 1) }); p.p2 = o; } else p.p2 = null;
+  p.mirror = p.sim.mirrored();
 }
 // the player's hitbox as the exe measures it (half the width of its rectangle)
 function playHalf() { const p = play; return p.sim && p.active ? p.sim.playerRect(false)[2] / 2 : 15; }
@@ -3412,13 +3417,25 @@ function playReset() {
   if (p.practice && p.cps.length) { cpRestore(p.cps[p.cps.length - 1]); camApply(); }
 }
 function playDie() { play.dead = 0.0001; }
+function applyMovers() {
+  const p = play;
+  for (const m of p.movers) {
+    if (Math.abs(m.o.x + m.dx - p.x) > 1200 && Math.abs(m.o.x - p.x) > 1200 && (m.tick = (m.tick || 0) + 1) % 24) continue;   // far from the player: looked at now and then
+    const g = groupStateFor(m.o), dx = g ? g.dx : 0, dy = g ? g.dy : 0, hid = !!(g && g.hidden);
+    const changed = dx !== m.dx || dy !== m.dy || hid !== m.hid;
+    if (changed || m.moving) p.sim.setObject(m.index, m.o.x + dx, m.o.y + dy, hid);
+    m.moving = changed; m.dx = dx; m.dy = dy; m.hid = hid;
+  }
+}
 function simStep(m, dtF) {
   const p = play, sim = p.sim, spd = m.speedAt(Math.max(0, p.x)), f = speedFactor(spd);
+  if (p.movers.length) applyMovers();
   if (f !== p.spdF) { sim.setSpeed(f); p.spdF = f; }
   if (p.hold && !p.pushed) { sim.push(); p.pushed = true; } else if (!p.hold && p.pushed) { sim.release(); p.pushed = false; }
   sim.step(dtF);
-  simSync(); visualRotation(dtF, spd);
+  simSync(); visualRotation(p, dtF, spd); if (p.p2) visualRotation(p.p2, dtF, spd);
   p.camOut = sim.camera();
+  const mir = p.mirror ? 'scaleX(-1)' : ''; if (canvas.style.transform !== mir) { canvas.style.transform = mir; const g = document.getElementById('gl'); if (g) g.style.transform = mir; }
   if (sim.died) { sim.died = false; playDie(); }
 }
 function playUpdate(delta) {
@@ -3517,6 +3534,45 @@ function drawSection() {
   }
   ctx.restore();
 }
+function drawOne(x, yLevel, g, rot, mode, mini, alpha, half) {
+  const [sx, sy] = toScreen(x, yLevel);
+  const k = view.zoom, mi = mini ? 0.6 : 1;
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.scale(1, g);                                                  // upside down when gravity is flipped
+  ctx.rotate(rot * Math.PI / 180);
+  ctx.globalAlpha = alpha;
+  const set = ICON_SETS[mode] || ICON_SETS.cube;
+  let drawn = false;
+  if (set.rider && ICON_SETS.cube.state === 'ready') drawIconSet(ICON_SETS.cube, k, set.rider * mi, set.riderY * mi / set.rider);
+  if (set.state === 'ready' || (set === ICON_SETS.cube && set.state === 'ready')) drawn = drawIconSet(set, k, mi, 0);
+  if (!drawn) {
+    const h = half;
+    ctx.fillStyle = '#7dff00'; ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(1, 2 * k);
+    ctx.beginPath();
+    if (mode === 'ball') ctx.arc(0, 0, h * k, 0, 7);
+    else if (mode === 'wave') { ctx.moveTo(-h * k, h * k * 0.7); ctx.lineTo(h * 1.2 * k, 0); ctx.lineTo(-h * k, -h * k * 0.7); ctx.closePath(); }
+    else if (mode === 'ship' || mode === 'swing') { ctx.moveTo(-h * k * 1.2, h * k * 0.6); ctx.lineTo(h * 1.2 * k, 0); ctx.lineTo(-h * 1.2 * k, -h * k * 0.6); ctx.closePath(); }
+    else if (mode === 'ufo') ctx.ellipse(0, 0, h * k * 1.1, h * k * 0.7, 0, 0, 7);
+    else ctx.rect(-h * k, -h * k, 2 * h * k, 2 * h * k);
+    ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawPlayer() {
+  if (!play.active || !level) return;
+  drawSection();
+  for (const c of play.cps) {                                       // practice checkpoints: green diamonds
+    const [cx, cy] = toScreen(c.x, c.g * c.ym), r = 11 * view.zoom;
+    ctx.save(); ctx.fillStyle = '#6bff3a'; ctx.strokeStyle = '#0b3a00'; ctx.lineWidth = Math.max(1.5, 2 * view.zoom);
+    ctx.beginPath(); ctx.moveTo(cx, cy - r); ctx.lineTo(cx + r, cy); ctx.lineTo(cx, cy + r); ctx.lineTo(cx - r, cy); ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.restore();
+  }
+  const a = play.dead ? Math.max(0, 1 - play.dead * 3) : 1;
+  drawOne(play.x, play.g * play.ym, play.g, play.rot, play.mode, play.mini, a, playHalf());
+  const q = play.p2;
+  if (q) drawOne(q.x, q.y - 90, q.upsideDown ? -1 : 1, q.rot, q.mode, q.scale < 0.95, a, 15 * (q.scale < 0.95 ? 0.6 : 1));
+}
+
 // ---- controls ----
 function playLoop(ts) {
   if (!play.active) return;

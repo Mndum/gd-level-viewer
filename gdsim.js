@@ -14,15 +14,15 @@ class Mem {
   rd64(a) { const r = this.find(a, 8); return r.dv.getBigUint64(a - r.lo, true); }
   rdf32(a) { const r = this.find(a, 4); return r.dv.getFloat32(a - r.lo, true); }
   rdf64(a) { const r = this.find(a, 8); return r.dv.getFloat64(a - r.lo, true); }
-  wr8(a, v) { const r = this.find(a, 1); r.dv.setUint8(a - r.lo, Number(BigInt.asUintN(8, BigInt(v)))); }
-  wr16(a, v) { const r = this.find(a, 2); r.dv.setUint16(a - r.lo, Number(BigInt.asUintN(16, BigInt(v))), true); }
-  wr32(a, v) { const r = this.find(a, 4); r.dv.setUint32(a - r.lo, Number(BigInt.asUintN(32, BigInt(v))), true); }
-  wr64(a, v) { const r = this.find(a, 8); r.dv.setBigUint64(a - r.lo, BigInt.asUintN(64, BigInt(v)), true); }
-  wrf32(a, v) { const r = this.find(a, 4); r.dv.setFloat32(a - r.lo, v, true); }
-  wrf64(a, v) { const r = this.find(a, 8); r.dv.setFloat64(a - r.lo, v, true); }
+  wr8(a, v) { const r = this.find(a, 1); if (r === this.nil) return; r.dv.setUint8(a - r.lo, Number(BigInt.asUintN(8, BigInt(v)))); }
+  wr16(a, v) { const r = this.find(a, 2); if (r === this.nil) return; r.dv.setUint16(a - r.lo, Number(BigInt.asUintN(16, BigInt(v))), true); }
+  wr32(a, v) { const r = this.find(a, 4); if (r === this.nil) return; r.dv.setUint32(a - r.lo, Number(BigInt.asUintN(32, BigInt(v))), true); }
+  wr64(a, v) { const r = this.find(a, 8); if (r === this.nil) return; r.dv.setBigUint64(a - r.lo, BigInt.asUintN(64, BigInt(v)), true); }
+  wrf32(a, v) { const r = this.find(a, 4); if (r === this.nil) return; r.dv.setFloat32(a - r.lo, v, true); }
+  wrf64(a, v) { const r = this.find(a, 8); if (r === this.nil) return; r.dv.setFloat64(a - r.lo, v, true); }
   rdx(a, x) { const r = this.find(a, 16); for (let i = 0; i < 16; i++) x.b8[i] = r.u8[a - r.lo + i]; }
   rdxo(a) { const x = new XR(); this.rdx(a, x); return x; }
-  wrx(a, x) { const r = this.find(a, 16); for (let i = 0; i < 16; i++) r.u8[a - r.lo + i] = x.b8[i]; }
+  wrx(a, x) { const r = this.find(a, 16); if (r === this.nil) return; for (let i = 0; i < 16; i++) r.u8[a - r.lo + i] = x.b8[i]; }
 }
 const mask = W => (W === 64 ? 0xffffffffffffffffn : W === 32 ? 0xffffffffn : W === 16 ? 0xffffn : 0xffn);
 const big = (v, W) => BigInt.asUintN(W, typeof v === 'bigint' ? v : BigInt(Math.trunc(v)));
@@ -449749,7 +449749,7 @@ const SIM = (() => {
   const LO = { player: 0xdb8, player2: 0xdc0, settings: 0xdc8, sections: 0x36b0, sectionsEnd: 0x36b8, counts: 0x3758, dirty: 0x3788, secScaleX: 0x37a0, secScaleY: 0x37a4, maxHeight: 0x37a8,
     solidCount: 0x3284, solidCap: 0x3288, solidData: 0x3290, hazCount: 0x32a8, hazCap: 0x32ac, hazData: 0x32b0, playing: 0x317e, time: 0x3c8, warp: 0x330 };
   // decoration (7), the trigger objects the page's timeline runs (20: move, colour, speed ... triggers), dual and mirror portals
-  const NOT_SIMULATED = new Set([7, 14, 15, 20, 23, 24, 0x27]);
+  const NOT_SIMULATED = new Set([7, 20, 0x27]);
   const SLOT = 0x800, WINDOW_BEHIND = 3, WINDOW_AHEAD = 9;
   const f32 = Math.fround;
   const cellOf = v => Math.max(0, Math.trunc(f32(Math.max(0, v) * f32(0.01))));
@@ -449821,31 +449821,55 @@ const SIM = (() => {
       const cap = 16384;
       M.wr32(lay + LO.solidCap, cap); M.wr64(lay + LO.solidData, s.pool.alloc(cap * 8)); M.wr32(lay + LO.hazCap, cap); M.wr64(lay + LO.hazData, s.pool.alloc(cap * 8));
     }
+    // a cell's vector holds the objects of its column (while that column is loaded) and the moving objects that are in it right now
+    const dyn = new Map(), cellArr = new Map();
+    function writeCell(cx, cy) {
+      if (cx < 0 || cx >= nX || cy < 0 || cy >= nY) return;
+      const key = cx * 65536 + cy, ptrs = [], c = sim.loaded.get(cx);
+      if (c && c.byCell.has(cy)) for (const p of c.byCell.get(cy)) ptrs.push(p);
+      const d = dyn.get(key); if (d) for (const p of d) ptrs.push(p);
+      const old = cellArr.get(key); if (old) { s.pool.release(old); cellArr.delete(key); }
+      const h = cellHdr[cx][cy];
+      if (!ptrs.length) { M.wr64(h, emptyArr); M.wr64(h + 8, emptyArr); M.wr64(h + 16, emptyArr); M.wr32(cellCnt[cx] + cy * 4, 0); return; }
+      const arr = s.pool.alloc(ptrs.length * 8); ptrs.forEach((p, k) => M.wr64(arr + k * 8, p));
+      M.wr64(h, arr); M.wr64(h + 8, arr + ptrs.length * 8); M.wr64(h + 16, arr + ptrs.length * 8);
+      M.wr32(cellCnt[cx] + cy * 4, ptrs.length); cellArr.set(key, arr);
+    }
+    function dynAdd(e) { const key = e.cx * 65536 + e.cy; if (!dyn.has(key)) dyn.set(key, new Set()); dyn.get(key).add(e.ptr); writeCell(e.cx, e.cy); }
+    function dynRemove(e) { const key = e.cx * 65536 + e.cy, d = dyn.get(key); if (d) d.delete(e.ptr); writeCell(e.cx, e.cy); }
     function loadColumn(cx) {
       if (cx < 0 || cx >= nX || sim.loaded.has(cx)) return;
       const byCell = new Map(), list = [];
       for (const i of cols[cx]) {
         const e = sim.objects[i];
-        if (!e.ptr) e.ptr = place(e.t, e.sp, i);
+        if (e.mv) continue;
+        e.ptr = place(e.t, e.sp, i);
         list.push(e);
         if (!byCell.has(e.cy)) byCell.set(e.cy, []);
         byCell.get(e.cy).push(e.ptr);
       }
-      const arrs = [];
-      for (const [cy, ptrs] of byCell) {
-        const arr = s.pool.alloc(ptrs.length * 8); ptrs.forEach((p, k) => M.wr64(arr + k * 8, p));
-        const h = cellHdr[cx][cy]; M.wr64(h, arr); M.wr64(h + 8, arr + ptrs.length * 8); M.wr64(h + 16, arr + ptrs.length * 8);
-        M.wr32(cellCnt[cx] + cy * 4, ptrs.length); arrs.push([cy, arr]);
-      }
-      sim.loaded.set(cx, { arrs, objs: list });
+      sim.loaded.set(cx, { byCell, objs: list });
+      for (const cy of byCell.keys()) writeCell(cx, cy);
     }
     function unloadColumn(cx) {
       const c = sim.loaded.get(cx); if (!c) return;
-      for (const [cy, arr] of c.arrs) { const h = cellHdr[cx][cy]; M.wr64(h, emptyArr); M.wr64(h + 8, emptyArr); M.wr64(h + 16, emptyArr); M.wr32(cellCnt[cx] + cy * 4, 0); s.pool.release(arr); }
-      for (const e of c.objs) { s.pool.release(e.ptr); e.ptr = 0; }
       sim.loaded.delete(cx);
+      for (const cy of c.byCell.keys()) writeCell(cx, cy);
+      for (const e of c.objs) { s.pool.release(e.ptr); e.ptr = 0; }
     }
     function unloadAll() { for (const cx of [...sim.loaded.keys()]) unloadColumn(cx); }
+    // the moving objects (those in a group some trigger moves or toggles) always exist and are re-filed into whichever cell they are in
+    function placeMovers() {
+      for (const e of sim.movers) { if (e.ptr) { dynRemove(e); s.pool.release(e.ptr); } e.cx = e.hcx; e.cy = e.hcy; e.ptr = place(e.t, e.sp, e.index); dynAdd(e); }
+    }
+    sim.setObject = (index, x, y, hidden) => {
+      const e = sim.moverByIndex.get(index); if (!e || !e.ptr) return;
+      const ncx = cellOf(x), ncy = cellOf(y + 90);
+      if (ncx !== e.cx || ncy !== e.cy) { dynRemove(e); e.cx = ncx; e.cy = ncy; dynAdd(e); }
+      const o = e.ptr;
+      if (M.rd32(o + 0x4dc) !== M.rd32(L.layer + 0x3e0)) { M.wrf32(o + 0x4d0, M.rdf64(o + 0x3b8)); M.wrf32(o + 0x4d4, M.rdf64(o + 0x3c0)); M.wr32(o + 0x4dc, M.rd32(L.layer + 0x3e0)); }   // the exe's own move bookkeeping: once per update the object remembers where it was
+      s.wrpt(o + s.POS, [x, y + 90]); M.wrf64(o + 0x3b8, x); M.wrf64(o + 0x3c0, y + 90); M.wr8(o + 0x368, 1); M.wr8(o + 0x28e, hidden ? 1 : 0);
+    };
     function window(px) {
       const c = cellOf(px), lo = c - WINDOW_BEHIND, hi = c + WINDOW_AHEAD;
       for (const cx of [...sim.loaded.keys()]) if (cx < lo || cx > hi) unloadColumn(cx);
@@ -449855,16 +449879,19 @@ const SIM = (() => {
     sim.cells = (cx, cy) => { const h = cellHdr[cx][cy], a = Number(M.rd64(h)), b = Number(M.rd64(h + 8)); const r = []; for (let p = a; p < b; p += 8) r.push(Number(M.rd64(p))); return { cnt: Number(M.rd32(cellCnt[cx] + cy * 4)), ptrs: r }; };
     sim.describe = id => { const t = template(id); return t.none ? null : { type: t.type, mx: t.mx, my: t.my, w: t.exeW, h: t.exeH, radius: t.radius, trigger: t.trigger, skip: t.skip, vt: t.vt }; };
     sim.load = function (specs) {
-      unloadAll(); s.pool.reset(); sim.objects = []; nX = 1; nY = 1;
+      unloadAll(); s.pool.reset(); dyn.clear(); cellArr.clear(); sim.objects = []; sim.movers = []; sim.moverByIndex = new Map(); nX = 1; nY = 1;
       specs.forEach((sp, index) => {
         const t = template(sp.id, sp.bw, sp.bh);
         if (t.none || t.skip) return;
         const cx = cellOf(sp.x), cy = cellOf(sp.y + 90);
         nX = Math.max(nX, cx + 1); nY = Math.max(nY, cy + 1);
-        sim.objects.push({ sp, t, cx, cy, ptr: 0, index });
+        const en = { sp, t, cx, cy, hcx: cx, hcy: cy, ptr: 0, index, mv: !!sp.mv };
+        sim.objects.push(en);
+        if (en.mv) { sim.movers.push(en); sim.moverByIndex.set(index, en); }
       });
       cols = Array.from({ length: nX }, () => []);
       sim.objects.forEach((e, i) => cols[e.cx].push(i));
+      nY = Math.max(nY, 32);
       buildSkeleton();
       started = false;
     };
@@ -449876,11 +449903,16 @@ const SIM = (() => {
       M.wr64(L.layer + LO.player, L.player); M.wr64(L.layer + LO.player2, L.player2); M.wr64(L.layer + LO.settings, L.fx);
       const gm = L.fx + 0x400; M.wr64(gm + 0x230, L.layer); M.wr64(IB + AD.gameManager, gm);
       run(F.plReset, { rcx: L.player });
+      run(F.plCtor, { rcx: L.player2 });                             // the second player (dual mode)
+      run(F.plInit, { rcx: L.player2, rdx: 1, r8: 1, r9: L.layer, stack: [1] });
+      run(F.plReset, { rcx: L.player2 });
+      M.wrf32(L.player2 + 0x2fc, 30); M.wrf32(L.player2 + 0x300, 30); M.wrf32(L.player2 + 0x394, 1); M.wrf32(L.player2 + 0x398, 1); M.wr8(L.player2 + 0x368, 1);
       M.wrf32(L.player + 0x2fc, 30); M.wrf32(L.player + 0x300, 30); M.wrf32(L.player + 0x394, 1); M.wrf32(L.player + 0x398, 1); M.wr8(L.player + 0x368, 1);
       M.wrf32(L.layer + LO.warp, 1.0); M.wr8(L.layer + 0x3398, 1); M.wr32(L.layer + 0x89c, 1); M.wr8(L.layer + LO.playing, 0);
       M.wrf32(L.layer + LO.maxHeight, o.maxHeight === undefined ? 2790 : o.maxHeight);
       s.wrpt(L.player + s.POS, [o.x, o.y + 90]);
       run(F.speed, { rcx: L.player, r8: 0 }, o.speed === undefined ? 0.9 : o.speed);
+      run(F.speed, { rcx: L.player2, r8: 0 }, o.speed === undefined ? 0.9 : o.speed);
       // the level reset sequence the exe runs before the first frame, then the camera is put under the player
       s.ctx.win = [o.winW || 569.6, o.winH || 320];
       M.wr8(L.layer + 0x331d, 1);
@@ -449895,6 +449927,7 @@ const SIM = (() => {
       if (!started) { setupPlayer(o); started = true; pristine = coreSnapshot(); }
       else coreRestore(pristine, o);
       sim.died = false; sim.time = 0;
+      placeMovers();
       window(o.x);
     };
     // a start in a vehicle (the level header's kA2): switch the player's mode and run the section set-up the exe does for a portal at (px, py)
@@ -449915,21 +449948,30 @@ const SIM = (() => {
       if (small) { X[2].f[0] = 0.3; X[3].f[0] = 0.3; a = Number(run(vcall(P, 0x498), { rcx: P, rdx: out }).rax); } else a = Number(run(vcall(P, 0x4a0), { rcx: P }).rax);
       return [M.rdf32(a), M.rdf32(a + 4), M.rdf32(a + 8), M.rdf32(a + 12)];
     };
-    sim.setSpeed = function (v) { run(F.speed, { rcx: L.player, r8: 0 }, v); };
+    sim.setSpeed = function (v) { run(F.speed, { rcx: L.player, r8: 0 }, v); run(F.speed, { rcx: L.player2, r8: 0 }, v); };
     // one 1/240 s step (dtF = 0.25 in the game's 1/60 s units)
     sim.step = function (dtF) {
+      M.wr32(L.layer + 0x3e0, (Number(M.rd32(L.layer + 0x3e0)) + 1) >>> 0);
       M.wrf64(L.layer + LO.time, sim.time); M.wr64(L.player + 0xaa8, M.rd64(L.layer + LO.time));
       window(s.rdpt(L.player + s.POS)[0]);
       run(F.pre, { rcx: L.player }, dtF / 60);
       run(F.update, { rcx: L.player }, dtF);
       X[2].f[0] = dtF;
       run(F.collide, { rcx: L.layer, rdx: L.player, r9: 0 }, dtF);
+      if (M.rd8(L.layer + 0x422) !== 0n) {                            // dual mode: the second player runs the same three calls
+        M.wr64(L.player2 + 0xaa8, M.rd64(L.layer + LO.time));
+        run(F.pre, { rcx: L.player2 }, dtF / 60); run(F.update, { rcx: L.player2 }, dtF);
+        X[2].f[0] = dtF; run(F.collide, { rcx: L.layer, rdx: L.player2, r9: 0 }, dtF);
+        if (M.rd8(L.player2 + 0x98c) !== 0n) { sim.died = true; sim.deathObj = 0; }
+      }
       run(F.camera, { rcx: L.layer }, dtF);
       if (M.rd8(L.player + 0x98c) !== 0n) { sim.died = true; sim.deathObj = 0; }       // PlayLayer::update destroys the player when the wall flag is set after the collision pass
       sim.time += dtF / 60;
     };
-    sim.push = () => run(F.push, { rcx: L.player, rdx: 1 });
-    sim.release = () => run(F.release, { rcx: L.player, rdx: 1 });
+    sim.push = () => { run(F.push, { rcx: L.player, rdx: 1 }); if (M.rd8(L.layer + 0x422) !== 0n) run(F.push, { rcx: L.player2, rdx: 1 }); };
+    sim.release = () => { run(F.release, { rcx: L.player, rdx: 1 }); if (M.rd8(L.layer + 0x422) !== 0n) run(F.release, { rcx: L.player2, rdx: 1 }); };
+    sim.dual = () => M.rd8(L.layer + 0x422) !== 0n;
+    sim.state2 = () => { const P = L.player2, p = s.rdpt(P + s.POS), f = o => M.rd8(P + o) !== 0n; return { x: p[0], y: p[1], mode: f(0x9c1) ? 'ship' : f(0x9c2) ? 'ufo' : f(0x9c3) ? 'ball' : f(0x9c4) ? 'wave' : f(0x9c5) ? 'robot' : f(0x9c6) ? 'spider' : f(0x9cc) ? 'swing' : 'cube', upsideDown: f(0x9c7), scale: M.rdf32(P + s.SCX), vy: M.rdf64(P + 0x9a8), onGround: f(0x9c9) }; };
     // ---- what the page draws from ----
     const flag = o => M.rd8(L.player + o) !== 0n;
     sim.pos = () => s.rdpt(L.player + s.POS);
@@ -449952,7 +449994,7 @@ const SIM = (() => {
     sim.snapshot = () => {
       const used = s.heapA.top() - L.heap, objs = [];
       for (const c of sim.loaded.values()) for (const e of c.objs) if (!e.t.still) { const r = M.find(e.ptr, 1), at = e.ptr - r.lo; objs.push([e.index, r.u8.slice(at, at + SLOT)]); }
-      return { core: coreSnapshot(), heap: M.find(L.heap, 1).u8.slice(0, used), heapState: s.heapA.save(), time: sim.time, died: sim.died, objs };
+      return { core: coreSnapshot(), heap: M.find(L.heap, 1).u8.slice(0, used), heapState: s.heapA.save(), time: sim.time, died: sim.died, objs, movers: sim.movers.map(e => { const r = M.find(e.ptr, 1), at = e.ptr - r.lo; return [e.index, e.cx, e.cy, r.u8.slice(at, at + SLOT)]; }) };
     };
     sim.restore = snap => {
       CORE.forEach((a, i) => { M.find(a, 1).u8.set(snap.core[i]); });
@@ -449962,7 +450004,9 @@ const SIM = (() => {
       window(sim.pos()[0]);
       const byIndex = new Map(); for (const c of sim.loaded.values()) for (const e of c.objs) byIndex.set(e.index, e);
       for (const [index, bytes] of snap.objs) { const e = byIndex.get(index); if (e) { const r = M.find(e.ptr, 1); r.u8.set(bytes, e.ptr - r.lo); } }
+      for (const [index, cx, cy, bytes] of snap.movers) { const e = sim.moverByIndex.get(index); dynRemove(e); e.cx = cx; e.cy = cy; const r = M.find(e.ptr, 1); r.u8.set(bytes, e.ptr - r.lo); dynAdd(e); }
     };
+    sim.mirrored = () => M.rd8(L.layer + 0x418) !== 0n;
     return sim;
   }
   return { create };
