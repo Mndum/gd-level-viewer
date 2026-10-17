@@ -915,6 +915,8 @@ function draw() {
       }
     }
   }
+  // the ground is drawn over the objects: nothing shows below the floor line, like in the game
+  if (opt.bg && gy < H) { ctx.fillStyle = '#000'; ctx.fillRect(0, Math.max(0, gy), W, H - Math.max(0, gy)); if (typeof drawGroundPicture === 'function') drawGroundPicture(W, H, gy); ctx.strokeStyle = lineCol; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke(); }
   if (highlight !== null) {
     ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5;
     for (const o of level.objs) {
