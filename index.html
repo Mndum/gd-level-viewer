@@ -896,7 +896,7 @@ function draw() {
       if (cull) { const r = 30 * Math.max(o.sx, o.sy) + 60; if (o.x < cx0 - r || o.x > cx1 + r || o.y < cy0 - r || o.y > cy1 + r) continue; }
       if (dots) {
         const reach = unitSize(o.id) * Math.max(o.sx, o.sy) * zm;
-        if (reach < 6) {
+        if (reach < 6 && zm < 0.7) {                       // only when zoomed far out: close up the real (tiny) sprite is drawn, not a grey dot
           const key = o.col * 8 + (CLS_I[o.cls] || 0);
           let c = dotColors.get(key); if (c === undefined) { c = colorFor(o, o.cls === 'deco' ? 0.55 : 0.9); dotColors.set(key, c); }
           let arr = dots.get(c); if (!arr) { arr = []; dots.set(c, arr); }
