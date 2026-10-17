@@ -3142,8 +3142,9 @@ const TIME_Y = 0.9;                                                // dt * 0.9 f
 const MODE_BY_KA2 = ['cube', 'ship', 'ball', 'ufo', 'wave', 'robot', 'spider', 'swing'];
 const MODE_PORTAL = { 12: 'cube', 13: 'ship', 47: 'ball', 111: 'ufo', 660: 'wave', 745: 'robot', 1331: 'spider', 1933: 'swing' };
 const CEILING_MODES = new Set(['ship', 'ufo', 'ball', 'wave', 'spider', 'swing']);
-function playHalf() { const p = play; return (p.mode === 'wave' ? 9 : PLAYER.half) * (p.mini ? 0.6 : 1); }
-function playSmall() { return PLAYER.small * (play.mini ? 0.6 : 1); }
+function playHalf() { const p = play; return (p.mode === 'wave' ? 5 : p.mode === 'spider' ? 13.5 : PLAYER.half) * (p.mini ? 0.6 : 1); }
+function playGroundHalf() { const p = play; return (p.mode === 'wave' ? 10 : p.mode === 'spider' ? 13.5 : PLAYER.half) * (p.mini ? 0.6 : 1); }
+function playSmall() { return 0.3 * playHalf(); }
 // jump strength and gravity per player speed (units/second -> the game's updateTimeMod table)
 function physFor(v) {
   if (Math.abs(v - 251.16) < 1) return { ys: 10.620032, g: 0.940199 };
@@ -3292,10 +3293,10 @@ function setPractice(on) {
 function playReset() {
   const p = play, s = startState();
   p.mode = s.mode; p.mini = s.mini; p.g = 1; setSection(p.mode, 105);
-  p.x = PLAYER.startX; p.ym = playHalf() + p.floorY; p.lym = p.ym; p.yv = 0; p.onGround = true; p.boosted = false; p.rot = 0;
+  p.x = PLAYER.startX; p.ym = playGroundHalf() + p.floorY; p.lym = p.ym; p.yv = 0; p.onGround = true; p.boosted = false; p.rot = 0;
   p.dead = 0; p.touched = new Set(); p.orbUsed = new Set(); p.attempt++; p.done = 0; p.press = false;
   p.isOnSlope = p.wasOnSlope = false; p.slopeVel = 0; p.slopeRot = 0; p.boostT = 9; p.robotUp = false; p.ballBuf = false; p.noClamp = false;
-  if (s.flip && p.ceilY != null) { p.g = -1; p.ym = -(p.ceilY - playHalf()); p.lym = p.ym; }
+  if (s.flip && p.ceilY != null) { p.g = -1; p.ym = -(p.ceilY - playGroundHalf()); p.lym = p.ym; }
   p.camY = p.ceilY != null ? p.floorY + 150 : 85;
   if (p.practice && p.cps.length) cpRestore(p.cps[p.cps.length - 1]);
 }
@@ -3494,14 +3495,14 @@ function vehicleSlope(s0, g) {
   return false;
 }
 function playCollide(speed) {
-  const p = play, w = p.world, H = playHalf(), SM = playSmall() * (p.mode === 'wave' ? 0.6 : 1), g = p.g, mode = p.mode;
+  const p = play, w = p.world, H = playHalf(), SM = playSmall(), GH = playGroundHalf(), g = p.g, mode = p.mode;
   const cubeLike = mode === 'cube' || mode === 'robot';
   p.wasOnSlope = p.isOnSlope; p.isOnSlope = false;
   // floor and ceiling of the section, in the mirrored space (the world's floor is the mirrored ceiling when upside down)
   const fl = g > 0 ? p.floorY : (p.ceilY != null ? -p.ceilY : null);
   const ce = g > 0 ? p.ceilY : -p.floorY;
-  if (fl !== null && p.ym - H <= fl && p.yv <= 0) { p.ym = fl + H; hitGround(); }
-  if (ce !== null && p.ym + H >= ce) { p.ym = ce - H; if (p.yv > 0) p.yv = 0; p.boosted = false; }
+  if (fl !== null && p.ym - GH <= fl && p.yv <= 0) { p.ym = fl + GH; hitGround(); }
+  if (ce !== null && p.ym + GH >= ce) { p.ym = ce - GH; if (p.yv > 0) p.yv = 0; p.boosted = false; }
   if (p.ym > 2500 || p.ym < -2500) { playDie(); return; }
   const rect = { l: p.x - H, r: p.x + H, b: p.ym - H, t: p.ym + H };
   const stamp = ++w.stamp, near = [];
