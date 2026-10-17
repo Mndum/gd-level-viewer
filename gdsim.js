@@ -449793,6 +449793,7 @@ const SIM = (() => {
       r.u8.set(t.bytes, o - r.lo);
       M.wr32(o + 0x39c, uid);
       M.wrf32(o + 0x488, sp.sx === undefined ? 1 : sp.sx); M.wrf32(o + 0x48c, sp.sy === undefined ? 1 : sp.sy);
+      M.wrf32(o + 0x3e4, sp.sx === undefined ? 1 : sp.sx); M.wrf32(o + 0x3e8, sp.sy === undefined ? 1 : sp.sy);       // the scale the object was last sized for
       s.wrpt(o + s.POS, [sp.x, sp.y + 90]); M.wrf64(o + 0x3b8, sp.x); M.wrf64(o + 0x3c0, sp.y + 90);
       M.wrf32(o + 0x4d0, sp.x); M.wrf32(o + 0x4d4, sp.y + 90);
       M.wr8(o + 0x368, 1);
