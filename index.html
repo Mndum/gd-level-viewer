@@ -3520,21 +3520,20 @@ function playCollide(speed) {
     if (e.kind === w.solids) {
       if (!overlaps(rect2, b)) continue;
       const dy = p.ym - p.lym;
-      if (cubeLike) {
-        const bottom = p.ym - H, maxSnap = bottom + PLAYER.snap, floatG = maxSnap - dy;
-        let hit = false;
-        if (maxSnap < b.t && floatG < b.t) hit = true;               // too far into it (side or underside): a crash
-        else if (p.yv > 0) hit = false;                              // rising past the top edge: no collision
-        else { p.ym = b.t + H; hitGround(); }                        // falling onto it: land
-        if (hit && overlaps(small2, b)) { playDie(); return; }
-      } else {
-        // vehicles slide along the top and the underside of blocks and crash into their sides
-        const snap = PLAYER.snap + Math.abs(dy);
-        const above = p.ym > (b.t + b.b) / 2;
-        if (above && b.t - (p.ym - H) <= snap) { p.ym = b.t + H; if (p.yv <= 0) hitGround(); }
-        else if (!above && (p.ym + H) - b.b <= snap) { p.ym = b.b - H; if (p.yv > 0) p.yv = 0; }
-        else if (overlaps(small2, b)) { playDie(); return; }
-      }
+      // PlayerObject::collidedWithObject (0x4ec5f0): the snap distance is 10 for the cube, ball, robot and spider and 6 for the ship, UFO, wave and swing.
+      // The player lands when its bottom + snap, now or one step ago, reaches the top of the block; otherwise a vehicle whose top - snap reaches the
+      // underside slides under it, and anything else touching the block with its small box crashes.
+      const veh = mode === 'ship' || mode === 'ufo' || mode === 'wave' || mode === 'swing';
+      const snap = veh ? 6 : PLAYER.snap;
+      const maxSnap = p.ym - H + snap, floatG = maxSnap - dy;
+      let hit = false;
+      if (maxSnap < b.t && floatG < b.t) {
+        const topLine = p.ym + H - snap;
+        if (veh && (b.b >= topLine || b.b >= topLine - dy)) { p.ym = b.b - H; if (p.yv > 0) p.yv = 0; p.boosted = false; continue; }
+        hit = true;                                                  // too far into it (side or underside): a crash
+      } else if (p.yv > 0) hit = false;                              // rising past the top edge: no collision
+      else { p.ym = b.t + H; hitGround(); }                          // falling onto it: land
+      if (hit && overlaps(small2, b)) { playDie(); return; }
     } else if (e.kind === w.hazards) {
       if (e.box.circle) {                                          // a saw: the nearest point of the player's box to the circle's centre
         const c = e.box.circle, cy = g > 0 ? c.y : -c.y;
