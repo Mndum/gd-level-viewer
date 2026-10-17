@@ -449796,7 +449796,7 @@ const SIM = (() => {
       M.wrf32(o + 0x488, sp.sx === undefined ? 1 : sp.sx); M.wrf32(o + 0x48c, sp.sy === undefined ? 1 : sp.sy);
       M.wrf32(o + 0x3e4, sp.sx === undefined ? 1 : sp.sx); M.wrf32(o + 0x3e8, sp.sy === undefined ? 1 : sp.sy);       // the scale the object was last sized for
       s.wrpt(o + s.POS, [sp.x, sp.y + 90]); M.wrf64(o + 0x3b8, sp.x); M.wrf64(o + 0x3c0, sp.y + 90);
-      M.wrf32(o + 0x4d0, sp.x); M.wrf32(o + 0x4d4, sp.y + 90);
+      M.wrf32(o + 0x4d0, sp.x); M.wrf32(o + 0x4d4, sp.y + 90); M.wrf32(o + 0x3c8, sp.x); M.wrf32(o + 0x3cc, sp.y + 90);   // start position (what the vehicle sections read the portal height from)
       M.wr8(o + 0x368, 1);
       M.wr8(o + 0x50, sp.fx ? 1 : 0); M.wr8(o + 0x51, sp.fy ? 1 : 0);
       if (sp.rot && t.setRot) run(t.setRot, { rcx: o }, sp.rot);          // GameObject::setRotation
@@ -449940,7 +449940,7 @@ const SIM = (() => {
       if (!mode || mode === 'cube') return;
       run(F.mode[mode], { rcx: L.player, rdx: 1, r8: 0 });
       const portal = s.pool.alloc(SLOT); M.wr64(portal, Number(M.rd64(L.player)));
-      s.wrpt(portal + s.POS, [px, py]); M.wrf64(portal + 0x3b8, px); M.wrf64(portal + 0x3c0, py);
+      s.wrpt(portal + s.POS, [px, py]); M.wrf64(portal + 0x3b8, px); M.wrf64(portal + 0x3c0, py); M.wrf32(portal + 0x3c8, px); M.wrf32(portal + 0x3cc, py);
       M.wr64(L.layer + 0x400, portal);
       run(F.secSetup, { rcx: L.layer, rdx: portal, r8: SECTION_TYPE[mode] || 6 });
     };
