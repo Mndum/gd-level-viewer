@@ -1788,7 +1788,57 @@ function afterEdit(structural) {
   draw();
 }
 
+// ---------- transforms about the centre of the selection (the editor's group centre: the middle of the objects' bounding box) ----------
+function selCenter(objs) {
+  let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+  for (const o of objs) { if (o.x < x0) x0 = o.x; if (o.x > x1) x1 = o.x; if (o.y < y0) y0 = o.y; if (o.y > y1) y1 = o.y; }
+  return [(x0 + x1) / 2, (y0 + y1) / 2];
+}
+const wrap360 = a => ((a % 360) + 360) % 360;
+// clockwise rotation: every object turns, and a group's positions orbit the centre
+function xfRotate(objs, deg, c) {
+  const [cx, cy] = c || selCenter(objs), r = deg * Math.PI / 180, cs = Math.cos(r), sn = Math.sin(r);
+  for (const o of objs) {
+    o.rot = wrap360(o.rot + deg);
+    if (objs.length > 1) { const dx = o.x - cx, dy = o.y - cy; o.x = cx + dx * cs + dy * sn; o.y = cy - dx * sn + dy * cs; }
+  }
+}
+// mirror: the object flips, its angle reverses, and a group's positions mirror about the centre
+function xfFlip(objs, axis, c) {
+  const [cx, cy] = c || selCenter(objs);
+  for (const o of objs) {
+    if (axis === 'x') { o.flipX = !o.flipX; if (objs.length > 1) o.x = 2 * cx - o.x; } else { o.flipY = !o.flipY; if (objs.length > 1) o.y = 2 * cy - o.y; }
+    o.rot = wrap360(-o.rot);
+  }
+}
+// scale by (fx, fy); a group's positions scale about the centre too
+function xfScale(objs, fx, fy, c) {
+  const [cx, cy] = c || selCenter(objs);
+  for (const o of objs) {
+    o.sx *= fx; o.sy *= fy; o.scaleDirty = true;
+    if (objs.length > 1) { o.x = cx + (o.x - cx) * fx; o.y = cy + (o.y - cy) * fy; }
+  }
+}
+
 // ---------- the actions on the current selection ----------
+// one undoable step; the centre is taken before the change so redo repeats it exactly
+const rotBy = (sel, d) => { const c = selCenter(sel); pushOp(opXf(sel, 'rotate', () => xfRotate(sel, d, c))); };
+const flipBy = (sel, a) => { const c = selCenter(sel); pushOp(opXf(sel, 'flip', () => xfFlip(sel, a, c))); };
+const scaleBy = (sel, f) => { const c = selCenter(sel); pushOp(opXf(sel, 'scale', () => xfScale(sel, f, f, c))); };
+// like opProps, but the change is applied to the whole list at once (positions too)
+function opXf(objs, name, apply) {
+  const before = objs.map(o => ({ o, s: snapState(o) }));
+  let after = null;
+  return {
+    name, structural: false,
+    do() {
+      if (after) { for (const a of after) { restoreState(a.o, a.s); a.o.dirty = true; } return; }
+      apply(); for (const o of objs) o.dirty = true;
+      after = objs.map(o => ({ o, s: snapState(o) }));
+    },
+    undo() { for (const b of before) { restoreState(b.o, b.s); b.o.dirty = true; } }
+  };
+}
 function act(name) {
   const sel = selList();
   if (name === 'undo') return undoEdit();
@@ -1801,14 +1851,16 @@ function act(name) {
     case 'right': return mv(NUDGE, 0);
     case 'up': return mv(0, NUDGE);
     case 'down': return mv(0, -NUDGE);
-    case 'rotL90': return pushOp(opProps(sel, o => { o.rot = ((o.rot - 90) % 360 + 360) % 360; }, 'rotate'));
-    case 'rotR90': return pushOp(opProps(sel, o => { o.rot = ((o.rot + 90) % 360 + 360) % 360; }, 'rotate'));
-    case 'rotL15': return pushOp(opProps(sel, o => { o.rot = ((o.rot - 15) % 360 + 360) % 360; }, 'rotate'));
-    case 'rotR15': return pushOp(opProps(sel, o => { o.rot = ((o.rot + 15) % 360 + 360) % 360; }, 'rotate'));
-    case 'flipX': return pushOp(opProps(sel, o => { o.flipX = !o.flipX; }, 'flip'));
-    case 'flipY': return pushOp(opProps(sel, o => { o.flipY = !o.flipY; }, 'flip'));
-    case 'scaleUp': return pushOp(opProps(sel, o => { o.sx *= 1.25; o.sy *= 1.25; o.scaleDirty = true; }, 'scale'));
-    case 'scaleDown': return pushOp(opProps(sel, o => { o.sx /= 1.25; o.sy /= 1.25; o.scaleDirty = true; }, 'scale'));
+    case 'rotL90': return rotBy(sel, -90);
+    case 'rotR90': return rotBy(sel, 90);
+    case 'rotL45': return rotBy(sel, -45);
+    case 'rotR45': return rotBy(sel, 45);
+    case 'rotL15': return rotBy(sel, -15);
+    case 'rotR15': return rotBy(sel, 15);
+    case 'flipX': return flipBy(sel, 'x');
+    case 'flipY': return flipBy(sel, 'y');
+    case 'scaleUp': return scaleBy(sel, 1.25);
+    case 'scaleDown': return scaleBy(sel, 0.8);
     case 'dup': {
       const copies = sel.map(o => Object.assign({}, o, {
         x: o.x + NUDGE, fields: o.fields.slice(), raw: Object.assign({}, o.raw),
@@ -4725,19 +4777,88 @@ function goptOverlay() {
     const b = paneSquare('edit', 'GJ_button_04', GREY, { cx, cy, w: 104, h: 90 }, () => frameURL(ic + '_001.png', hex), () => setStep(i), 'Move step: ' + v + ' units');
     stepBtns.push(b);
   });
-  const rot = (d) => () => { const sel = selList(); if (!sel.length) return; pushOp(opProps(sel, o => { o.rot = ((o.rot + d) % 360 + 360) % 360; }, 'rotate')); };
-  const scl = (f) => () => { const sel = selList(); if (!sel.length) return; pushOp(opProps(sel, o => { o.sx *= f; o.sy *= f; o.scaleDirty = true; }, 'scale')); };
+  // Free Rotate / Scale / Scale XY open an on-canvas handle around the selection (drag it); Rotate Snap toggles 15 degree steps for the rotate handle.
+  // Groups turn and scale about the centre of the selection, a single object about itself.
+  S.gz = null; S.rotSnap = true;
+  const gzBtns = {};
+  const gzSet = k => { S.gz = S.gz === k ? null : k; gzPaint(); draw(); };
+  const gzPaint = () => {
+    for (const k of ['rot', 'scale', 'scaleXY']) if (gzBtns[k]) recolor(gzBtns[k], S.gz === k ? 'GJ_button_02' : 'GJ_button_01', null);
+    if (gzBtns.snap) recolor(gzBtns.snap, S.rotSnap ? 'GJ_button_02' : 'GJ_button_01', null);
+  };
   const XF = [
-    ['edit_flipXBtn', () => act('flipX'), 'Flip horizontally'], ['edit_flipYBtn', () => act('flipY'), 'Flip vertically'], ['edit_cwBtn', rot(90), 'Rotate 90° clockwise'], ['edit_ccwBtn', rot(-90), 'Rotate 90° counter-clockwise'],
-    ['edit_rotate45rBtn', rot(45), 'Rotate 45° clockwise'], ['edit_rotate45lBtn', rot(-45), 'Rotate 45° counter-clockwise'], ['edit_freeRotateBtn', rot(15), 'Rotate 15° clockwise'], ['edit_rotateSnapBtn', rot(-15), 'Rotate 15° counter-clockwise'],
-    ['edit_scaleBtn', scl(1.25), 'Bigger (x1.25)'], ['edit_scaleXYBtn', scl(0.8), 'Smaller (÷1.25)'], ['edit_warpBtn', null, 'Warp (not available)'],
+    ['edit_flipXBtn', () => act('flipX'), 'Flip horizontally'], ['edit_flipYBtn', () => act('flipY'), 'Flip vertically'],
+    ['edit_cwBtn', () => act('rotR90'), 'Rotate 90 clockwise'], ['edit_ccwBtn', () => act('rotL90'), 'Rotate 90 counter-clockwise'],
+    ['edit_rotate45rBtn', () => act('rotR45'), 'Rotate 45 clockwise'], ['edit_rotate45lBtn', () => act('rotL45'), 'Rotate 45 counter-clockwise'],
+    ['edit_freeRotateBtn', () => gzSet('rot'), 'Free rotate: drag the handle', 'rot'], ['edit_rotateSnapBtn', () => { S.rotSnap = !S.rotSnap; gzPaint(); }, 'Rotate snap (15 degree steps)', 'snap'],
+    ['edit_scaleBtn', () => gzSet('scale'), 'Scale: drag the handle', 'scale'], ['edit_scaleXYBtn', () => gzSet('scaleXY'), 'Scale X and Y separately: drag the handle', 'scaleXY'], ['edit_warpBtn', null, 'Warp (not available)'],
     ['gj_linkBtn', () => { if (window.dialogsApi && level) dialogsApi.openEditTools(); }, 'Build Helper: align, distribute, new groups, select left / right, link']
   ];
   UI_FRAMES.push('gj_linkBtn_001.png');
-  XF.forEach(([ic, fn, title], i) => {
+  XF.forEach(([ic, fn, title, key], i) => {
     const cx = 1174 + (i % 4) * 114.5, cy = [828, 922, 1016][Math.floor(i / 4)];
-    paneSquare('edit', 'GJ_button_01', null, { cx, cy, w: 104, h: 90 }, frameIcon(ic + '_001.png'), fn, title);
+    const btn = paneSquare('edit', 'GJ_button_01', null, { cx, cy, w: 104, h: 90 }, frameIcon(ic + '_001.png'), fn, title);
+    if (key) gzBtns[key] = btn;
   });
+  gzPaint();
+  // the handle: a ring round the selection centre with a dot on it
+  const gz = { drag: null, R: 95 };
+  window.gzDebug = () => ({ mode: S.gz, drag: !!gz.drag, ang: gz.ang, c: gzCenter(), h: gzCenter() && gzHandle(gzCenter()), tab: S.tab });
+  const gzCenter = () => { const sel = selList(); if (!sel.length) return null; const c = selCenter(sel), p = toScreen(c[0], c[1]); return { w: c, x: p[0], y: p[1] }; };
+  const gzHandle = c => (S.gz === 'rot' ? { x: c.x + gz.R * Math.cos(gz.ang || -Math.PI / 2), y: c.y + gz.R * Math.sin(gz.ang || -Math.PI / 2) } : { x: c.x + gz.R, y: c.y - (S.gz === 'scaleXY' ? gz.R : 0) });
+  function gzFactors(c, px, py) {
+    if (S.gz === 'scaleXY') { let fx = Math.abs(px - c.x) / gz.R, fy = Math.abs(c.y - py) / gz.R; if (S.tog.snap) { fx = Math.round(fx * 20) / 20; fy = Math.round(fy * 20) / 20; } return [Math.min(10, Math.max(0.05, fx)), Math.min(10, Math.max(0.05, fy))]; }
+    let f = Math.hypot(px - c.x, py - c.y) / gz.R; if (S.tog.snap) f = Math.round(f * 20) / 20; f = Math.min(10, Math.max(0.05, f)); return [f, f];
+  }
+  function gzApply(sel, c, px, py) {                       // live preview: back to the start, then apply the current amount
+    for (const it of gz.drag.init) restoreState(it.o, it.s);
+    if (S.gz === 'rot') {
+      let d = (Math.atan2(py - c.y, px - c.x) - gz.drag.a0) * 180 / Math.PI;
+      d = ((d + 540) % 360) - 180; if (S.rotSnap) d = Math.round(d / 15) * 15;
+      gz.drag.amount = d; xfRotate(sel, d, c.w);
+    } else { const f = gzFactors(c, px, py); gz.drag.amount = f; xfScale(sel, f[0], f[1], c.w); }
+    gridStamp++; draw();
+  }
+  // (on window, in the capture phase, so the handle wins over the view's own object drag when it sits on top of an object)
+  window.addEventListener('pointerdown', e => {
+    if (e.target !== canvas || !S.gz || S.tab !== 'edit' || !level || (window.play && window.play.active)) return;
+    const c = gzCenter(); if (!c) return;
+    const r = canvas.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top, h = gzHandle(c);
+    if (Math.hypot(px - h.x, py - h.y) > 26) return;
+    const sel = selList().slice();
+    gz.drag = { init: sel.map(o => ({ o, s: snapState(o) })), sel, c, a0: Math.atan2(py - c.y, px - c.x), amount: S.gz === 'rot' ? 0 : [1, 1] };
+    canvas.setPointerCapture(e.pointerId); e.stopImmediatePropagation(); e.preventDefault();
+  }, true);
+  window.addEventListener('pointermove', e => {
+    if (!gz.drag) return;
+    const r = canvas.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+    if (S.gz === 'rot') gz.ang = Math.atan2(py - gz.drag.c.y, px - gz.drag.c.x);
+    gzApply(gz.drag.sel, gz.drag.c, px, py); e.stopImmediatePropagation();
+  }, true);
+  window.addEventListener('pointerup', e => {
+    const d = gz.drag; if (!d) return; gz.drag = null;
+    for (const it of d.init) restoreState(it.o, it.s);          // undo the preview, then record the step so it can be undone and redone
+    const sel = d.sel, w = d.c.w, amt = d.amount;
+    if (S.gz === 'rot') { if (amt) pushOp(opXf(sel, 'rotate', () => xfRotate(sel, amt, w))); }
+    else if (amt[0] !== 1 || amt[1] !== 1) pushOp(opXf(sel, 'scale', () => xfScale(sel, amt[0], amt[1], w)));
+    gz.ang = null; draw(); e.stopImmediatePropagation();
+  }, true);
+  { const _draw = draw; draw = function () {
+    _draw();
+    if (!S.gz || S.tab !== 'edit' || !level || (window.play && window.play.active)) return;
+    const c = gzCenter(); if (!c) return;
+    const h = gzHandle(c);
+    ctx.save(); ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.fillStyle = 'rgba(120,255,120,.95)';
+    ctx.beginPath(); ctx.arc(c.x, c.y, gz.R, 0, 6.2832); ctx.setLineDash([8, 6]); ctx.stroke(); ctx.setLineDash([]);
+    if (S.gz === 'scaleXY') { ctx.strokeRect(c.x - gz.R, c.y - gz.R, gz.R * 2, gz.R * 2); }
+    ctx.beginPath(); ctx.moveTo(c.x - 8, c.y); ctx.lineTo(c.x + 8, c.y); ctx.moveTo(c.x, c.y - 8); ctx.lineTo(c.x, c.y + 8); ctx.stroke();
+    ctx.beginPath(); if (S.gz === 'rot') ctx.arc(h.x, h.y, 13, 0, 6.2832); else ctx.rect(h.x - 12, h.y - 12, 24, 24); ctx.fill(); ctx.stroke();
+    if (gz.drag) {
+      const a = gz.drag.amount, txt = S.gz === 'rot' ? a + ' deg' : (S.gz === 'scale' ? 'x' + a[0].toFixed(2) : 'x' + a[0].toFixed(2) + '  y' + a[1].toFixed(2));
+      ctx.font = 'bold 22px sans-serif'; ctx.fillStyle = '#fff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 4; ctx.strokeText(txt, c.x + 14, c.y - gz.R - 14); ctx.fillText(txt, c.x + 14, c.y - gz.R - 14);
+    }
+    ctx.restore();
+  }; }
 
   // ----- build tab -----
   const CATS = [
