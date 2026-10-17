@@ -5299,7 +5299,7 @@ function goptOverlay() {
         const id = rawNumOf(p, key, 0), c = id > 0 && level.channels.get(id);
         const sw = mk('div', 'a', root); put(sw, o(940, y, 60, 60));
         sw.style.cssText += `;background:${c ? `rgb(${c.r},${c.g},${c.b})` : 'transparent'};border:calc(4*var(--k)) solid #000;border-radius:calc(8*var(--k));box-sizing:border-box;pointer-events:none`;
-        nbtn(root, 'GJ_button_01', null, o(250, y + 70, 220, 60), () => { pickCb = v => A.editRaw(selObjs(), ob => A.setKey(ob, key, v), label); chPage = 0; openOver(colorsDialog); }, 'Pick...', 'gold', 40);
+        nbtn(root, 'GJ_button_01', null, o(250, y + 70, 220, 60), () => { csKey = key; openOver(colorSelectDialog); }, 'Pick...', 'gold', 40);
         nbtn(root, 'GJ_button_06', null, o(500, y + 70, 220, 60), () => { if (id > 0) openOver(() => chanDialog(id)); }, 'Edit', 'gold', 40);
       };
       chRow(290, 'Main colour:', '21');
@@ -5396,9 +5396,10 @@ function goptOverlay() {
   }
   let chPage = 0, chAdd = 1;
   function colorsDialog() {
-    const ids = chIds(), per = 24, pages = Math.max(1, Math.ceil(ids.length / per));
+    // choosing a channel for an object lists every custom channel (1 to 999) like the game's Select Custom Color; the colour list shows the ones in use
+    const pick = !!pickCb, ids = pick ? Array.from({ length: 999 }, (_, i) => i + 1).concat(SPECIAL_CH) : chIds(), per = pick ? 18 : 24, pages = Math.max(1, Math.ceil(ids.length / per));
     chPage = Math.min(chPage, pages - 1);
-    const o = smallDialog(1560, 900, 'Colour Channels', 80);
+    const o = smallDialog(1560, 900, pick ? 'Select Custom Color:' : 'Colour Channels', 80);
     ids.slice(chPage * per, chPage * per + per).forEach((id, i) => {
       const x = 150 + (i % 6) * 252, y = 215 + Math.floor(i / 6) * 120, c = level.channels.get(id);
       nbtn(root, 'GJ_button_04', null, o(x, y, 236, 104), () => { if (pickCb) { const f = pickCb; pickCb = null; f(id); back(); } else openOver(() => chanDialog(id)); }, '', 'big', 30);
@@ -5411,6 +5412,30 @@ function goptOverlay() {
     nbtn(root, 'GJ_button_04', null, o(680, 830, 120, 80), () => { chPage = (chPage + 1) % pages; open(colorsDialog); }, '>', 'big', 56);
     nbtn(root, 'GJ_button_01', null, o(1000, 830, 300, 90), () => openOver(addChannelDialog), 'New channel', 'gold', 46);
     nbtn(root, 'GJ_button_01', null, o(1360, 830, 190, 90), () => { if (pickCb) { pickCb = null; back(); } else close(); }, pickCb ? 'Cancel' : 'OK', 'gold', 60);
+  }
+  // the game's Base / Detail Color dialog: P-Col 1, P-Col 2, Light BG, Default, channels 1 to 9, the channel used last, Next Free and a "+" for every custom channel
+  let csKey = '21', csRecent = 0;
+  function colorSelectDialog() {
+    const o = smallDialog(1600, 860, csKey === '21' ? 'Base Color' : 'Detail Color', 90);
+    const sel = selObjs(), key = csKey, label = key === '21' ? 'main colour' : 'detail colour';
+    const cur = rawNumOf(sel[0] || {}, key, 0), usedCh = new Set(level.channels.keys());
+    for (const ob of level.objs) for (const k of ['21', '22']) { const v = Number(ob.raw && ob.raw[k]); if (v > 0) usedCh.add(v); }
+    const apply = v => { A.editRaw(sel, ob => A.setKey(ob, key, v === 0 ? undefined : v), label); if (v > 9 && v < 1000) csRecent = v; open(colorSelectDialog); };
+    const tab = (x, name, k) => nbtn(root, csKey === k ? 'GJ_button_03' : 'GJ_button_04', null, o(x, 190, 300, 90), () => { csKey = k; open(colorSelectDialog); }, name, 'gold', 54);
+    tab(330, 'Base', '21'); tab(660, 'Detail', '22');
+    const btn = (x, y, w, id, text) => nbtn(root, cur === id ? 'GJ_button_02' : 'GJ_button_04', null, o(x, y, w, 84), () => apply(id), text, 'gold', 46);
+    btn(300, 340, 260, 1005, 'P-Col 1'); btn(620, 340, 260, 1006, 'P-Col 2'); btn(960, 340, 260, 1007, 'Light BG'); btn(1290, 340, 260, 0, 'Default');
+    for (let i = 1; i <= 9; i++) { const x = 260 + ((i - 1) % 5) * 245, y = 470 + Math.floor((i - 1) / 5) * 130; nbtn(root, cur === i ? 'GJ_button_02' : 'GJ_button_04', null, o(x, y, 160, 84), () => apply(i), String(i), 'gold', 50); }
+    const rec = csRecent || [...usedCh].filter(v => v > 9 && v < 1000).sort((a, b) => b - a)[0] || 0;
+    if (rec) nbtn(root, cur === rec ? 'GJ_button_02' : 'GJ_button_04', null, o(260 + 4 * 245, 600, 160, 84), () => apply(rec), String(rec), 'gold', 50);
+    const free = () => { for (let v = 1; v < 1000; v++) if (!usedCh.has(v)) return v; return 0; };
+    nbtn(root, 'GJ_button_04', null, o(330, 780, 360, 90), () => { const v = free(); if (v) { chSet(v, {}); apply(v); } }, 'Next Free', 'gold', 50);
+    nbtn(root, 'GJ_button_01', null, o(800, 780, 260, 100), back, 'OK', 'gold', 70);
+    txt(root, 'gold', cur > 0 ? String(cur) : '', 60, o(1230, 780, 130, 80));
+    const c = cur > 0 ? level.channels.get(cur) : null;
+    const sw = mk('div', 'a', root); put(sw, o(1400, 780, 100, 100));
+    sw.style.cssText += `;background:rgb(${c ? c.r : 255},${c ? c.g : 255},${c ? c.b : 255});border:calc(4*var(--k)) solid #000;border-radius:calc(10*var(--k));box-sizing:border-box;pointer-events:none`;
+    nbtn(root, 'GJ_button_04', null, o(1510, 690, 60, 60), () => { pickCb = v => { apply(v); }; chPage = 0; openOver(colorsDialog); }, '+', 'gold', 40);
   }
   function addChannelDialog() {
     const o = smallDialog(1000, 420, 'New Channel', 80);
