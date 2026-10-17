@@ -3342,12 +3342,12 @@ function spriteSize(id) {
   return fi ? [fi.w / fi.sheet.Q, fi.h / fi.sheet.Q] : [30, 30];
 }
 function simSpecs() {
-  const out = [], movers = [], ev = timelineModel().ev, groups = new Set([...ev.move.keys(), ...ev.follow.keys(), ...ev.toggle.keys()]);
+  const out = [], movers = [], ev = timelineModel().ev, groups = new Set([...ev.move.keys(), ...ev.follow.keys(), ...ev.toggle.keys(), ...ev.rot.keys(), ...ev.scale.keys()]);
   for (const o of level.objs) {
     if (o.raw && o.raw['121'] === '1') continue;                         // "No Touch" (key 121): the object has no collision at all
     const b = spriteSize(o.id);
     const mv = groups.size > 0 && o.groups && groupsOf(o).some(g => groups.has(g));
-    if (mv) movers.push({ o, index: out.length, dx: 0, dy: 0, hid: false, moving: false });
+    if (mv) movers.push({ o, index: out.length, dx: 0, dy: 0, hid: false, moving: false, key: '' });
     out.push({ id: o.id, x: o.x, y: o.y, rot: o.rot || 0, sx: o.sx, sy: o.sy, fx: o.flipX, fy: o.flipY, bw: b[0], bh: b[1], mv: !!mv });
   }
   play.movers = movers;
@@ -3421,10 +3421,19 @@ function applyMovers() {
   const p = play;
   for (const m of p.movers) {
     if (Math.abs(m.o.x + m.dx - p.x) > 1200 && Math.abs(m.o.x - p.x) > 1200 && (m.tick = (m.tick || 0) + 1) % 24) continue;   // far from the player: looked at now and then
-    const g = groupStateFor(m.o), dx = g ? g.dx : 0, dy = g ? g.dy : 0, hid = !!(g && g.hidden);
-    const changed = dx !== m.dx || dy !== m.dy || hid !== m.hid;
-    if (changed || m.moving) p.sim.setObject(m.index, m.o.x + dx, m.o.y + dy, hid);
-    m.moving = changed; m.dx = dx; m.dy = dy; m.hid = hid;
+    const g = groupStateFor(m.o), o = m.o, hid = !!(g && g.hidden);
+    let x = o.x, y = o.y, rot = o.rot || 0, sx = o.sx, sy = o.sy;
+    if (g) {                                                         // the same transform the drawing applies: move, then orbit / scale about the centre object, then turn
+      x += g.dx; y += g.dy;
+      if (g.rot || g.sx !== 1 || g.sy !== 1) {
+        if (g.cx !== null) { const vx = (x - g.cx) * g.sx, vy = (y - g.cy) * g.sy, a = -g.rot * Math.PI / 180; x = g.cx + vx * Math.cos(a) - vy * Math.sin(a); y = g.cy + vx * Math.sin(a) + vy * Math.cos(a); }
+        rot = (o.rot || 0) + (g.lock ? 0 : g.rot); sx = o.sx * g.sx; sy = o.sy * g.sy;
+      }
+    }
+    const key = x + ',' + y + ',' + rot + ',' + sx + ',' + sy + ',' + hid, changed = key !== m.key;
+    if (changed || m.moving) p.sim.setObject(m.index, x, y, hid, rot, sx, sy);
+    m.key = key; m.dx = x - o.x; m.dy = y - o.y;
+    m.moving = changed;
   }
 }
 function simStep(m, dtF) {
