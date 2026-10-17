@@ -2425,10 +2425,12 @@ function buildTimeline() {
       case 901: {
         let dx = rawNum(o, '28', 0), dy = rawNum(o, '29', 0), dyn = null;
         if (o.raw['100'] === '1' || o.raw['394'] === '1') {           // Target mode (100): the group goes to where the target group (71) sits; Direction mode (394): it goes towards it by a distance (396)
-          const tg = first.get(rawNum(o, '71', 0)), ctr = first.get(rawNum(o, '395', 0)) || first.get(g);
+          // "Target player 1/2" (138 / 200) aims at the player instead of the target group; with one player both mean player 1 (0x323bee..)
+          const toPlayer = o.raw['138'] === '1' || o.raw['200'] === '1', py = toPlayer ? traceY(o.x) : null;
+          const tg = toPlayer ? (py === null ? null : { x: o.x, y: py }) : first.get(rawNum(o, '71', 0)), ctr = first.get(rawNum(o, '395', 0)) || first.get(g);
           if (!tg || !ctr) return;
           let tx = tg.x - ctr.x, ty = tg.y - ctr.y;
-          dyn = { tgtG: rawNum(o, '71', 0), ctrG: rawNum(o, '395', 0) || g, tg, ctr, dir: o.raw['394'] === '1', want: rawNum(o, '396', 0), axis: o.raw['394'] === '1' ? 0 : rawNum(o, '101', 0) };
+          dyn = toPlayer ? null : { tgtG: rawNum(o, '71', 0), ctrG: rawNum(o, '395', 0) || g, tg, ctr, dir: o.raw['394'] === '1', want: rawNum(o, '396', 0), axis: o.raw['394'] === '1' ? 0 : rawNum(o, '101', 0) };
           if (o.raw['394'] === '1') {
             const len = Math.hypot(tx, ty), want = rawNum(o, '396', 0);
             if (len > 0) { tx *= want / len; ty *= want / len; }
@@ -2439,8 +2441,11 @@ function buildTimeline() {
           dx = tx; dy = ty;
         }
         // Lock to player X (58) or to camera X (141): the group keeps pace with the player along x for the duration, instead of moving by a fixed amount
-        const lockX = o.raw['58'] === '1' || o.raw['141'] === '1', lockY = o.raw['59'] === '1' || o.raw['142'] === '1';
-        push(ev.move, g, { t, src: groupsOf(o), dur, e, rate, dx: lockX ? 0 : dx, dy: lockY ? 0 : dy, lockX, lockY, px0: o.x, xOf, dyn, grp: g }); return;
+        // (the exe clears every lock when the move is a target or direction move)
+        const tgtMode = o.raw['100'] === '1' || o.raw['394'] === '1';
+        const lockX = !tgtMode && (o.raw['58'] === '1' || o.raw['141'] === '1'), lockY = !tgtMode && (o.raw['59'] === '1' || o.raw['142'] === '1');
+        const mx = rawNum(o, '143', 1), my = rawNum(o, '144', 1);                  // X / Y mod: how much of the player's movement the group copies
+        push(ev.move, g, { t, src: groupsOf(o), dur, e, rate, dx: lockX ? 0 : dx, dy: lockY ? 0 : dy, lockX, lockY, mx, my, px0: o.x, xOf, dyn, grp: g }); return;
       }
       case 1912: {                                               // Random: key 10 = chance of group 51, otherwise group 71 (a preview can't roll dice, so it shows the likelier one)
         const pick = rawNum(o, '10', 50) >= 50 ? g : rawNum(o, '71', 0), d = rawNum(o, '63', 0);
@@ -2621,10 +2626,10 @@ function moveDisp(ev, g, T, depth, skip) {
     }
     const k = ease(e.e, e.rate, e.dur > 0 ? clampN(runTime(ev, e, T) / e.dur, 0, 1) : 1);
     dx += e.dx * k; dy += e.dy * k;
-    if (e.lockX) dx += e.xOf(Math.min(T, e.t + e.dur)) - e.px0;                  // (player x at the end of the lock, or now) - where the lock began
+    if (e.lockX) dx += (e.xOf(Math.min(T, e.t + e.dur)) - e.px0) * e.mx;                  // (player x at the end of the lock, or now) - where the lock began
     if (e.lockY) {                                                                // the same along y, from the recorded run of the player (nothing to follow before one exists)
       const y0 = traceY(e.px0), y1 = traceY(e.xOf(Math.min(T, e.t + e.dur)));
-      if (y0 !== null && y1 !== null) dy += y1 - y0;
+      if (y0 !== null && y1 !== null) dy += (y1 - y0) * e.my;
     }
   }
   if (depth < 6) for (const f of (ev.follow.get(g) || [])) {
