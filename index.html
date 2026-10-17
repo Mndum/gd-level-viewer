@@ -3573,15 +3573,22 @@ function playUpdate(delta) {
   const p = play;
   if (p.dead) {
     p.dead += delta;
-    if (p.dead > 0.6) playReset();
+    if (p.dead > 1.0) playReset();                                  // the game restarts a second after the death ("Faster Reset" makes it 0.5 s)
     return;
   }
   const m = timelineModel();
-  const steps = Math.max(1, Math.floor(delta * 240)), dtF = delta * 60 / steps;
-  for (let i = 0; i < steps && !p.dead; i++) {
+  const STEP = 1 / 240, dtF = STEP * 60;                            // the game simulates in fixed 1/240 s steps, whatever the frame rate
+  p.acc = Math.min((p.acc || 0) + delta, 0.1);
+  const realHold = p.hold, tapped = p.tap; p.tap = false;
+  if (tapped && !p.hold) p.hold = true;                             // a click that began and ended inside one frame is still a jump
+  let first = true;
+  while (p.acc >= STEP && !p.dead) {
     const spd = m.speedAt(Math.max(0, p.x));
     playStep(dtF, spd, physFor(spd));
+    p.acc -= STEP;
+    if (first) { first = false; p.hold = realHold; }
   }
+  p.hold = realHold;
   if (p.x > m.maxX) { p.done++; if (p.practice) p.cps = []; else p.best = 100; playReset(); }
   if (!p.dead) { p.press = false; if (!p.practice) p.best = Math.max(p.best, Math.min(100, Math.floor(Math.max(0, p.x) / m.maxX * 100))); }
   // camera follows the cube
@@ -3757,7 +3764,7 @@ function stopPlay() {
   const down = () => {
     if (!play.active) return;
     if (!play.hold) play.press = true;
-    play.hold = true;
+    play.hold = true; play.tap = true;
   };
   const up = () => { play.hold = false; };
   addEventListener('keydown', e => {
