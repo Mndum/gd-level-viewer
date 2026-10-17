@@ -2639,8 +2639,13 @@ function moveDisp(ev, g, T, depth, skip) {
   }
   return [dx, dy];
 }
+let traceSig = '';
 function stateAt(X) {
-  if (window.play && window.play.active) PLAYER_TRACE.set(Math.round(window.play.x / 2), window.play.ym);
+  const pl = window.play, sig = pl && pl.active ? 'on' + pl.attempt : (traceSig.startsWith('on') ? 'end' + traceSig : traceSig);
+  if (pl && pl.active) PLAYER_TRACE.set(Math.round(pl.x / 2), pl.ym);
+  // the timeline is rebuilt when a run starts or ends, so the moves that aim at / follow the player's recorded height use the newest run
+  if (sig !== traceSig) { const was = traceSig; traceSig = sig; if (was !== '' && PLAYER_TRACE.size) { tl.dirty = true; tl.cacheX = null; } }
+  if (tl.dirty || !tl.model) timelineModel();
   if (tl.cache && tl.cacheX === X) return tl.cache;
   const m = timelineModel(), T = m.tOf(X), ev = m.ev;
   const channels = new Map();
