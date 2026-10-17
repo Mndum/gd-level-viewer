@@ -3133,7 +3133,7 @@ window.play = {
   active: false, dead: 0, attempt: 0, x: -30, ym: 15, lym: 15, yv: 0, g: 1, onGround: true, boosted: false, rot: 0,
   hold: false, press: false, world: null, raf: 0, last: 0, camY: 85, best: 0, done: 0, touched: new Set(), orbUsed: new Set(), icon: null,
   isOnSlope: false, wasOnSlope: false, slopeVel: 0, slopeRot: 0, shown: 0,
-  mode: 'cube', mini: false, floorY: 0, ceilY: null, boostT: 9, robotUp: false, spin: 0, practice: false, cps: []
+  mode: 'cube', mini: false, floorY: 0, ceilY: null, boostT: 9, robotUp: false, spin: 0, practice: false, cps: [], noClamp: false
 };
 const PLAYER = { half: 15, small: 4.5, snap: 10, maxFall: 15, startX: -30 };
 const VEH_G = 0.958199;                                            // gravity constant of every vehicle (rdata 0x830a1c)
@@ -3279,7 +3279,7 @@ function setSection(mode, py) {
   else { p.floorY = 0; p.ceilY = null; }
 }
 // ---- practice mode: checkpoints keep the whole player state; dying restarts from the last one (Z places one, X removes the last, P toggles practice) ----
-const CP_FIELDS = ['x', 'ym', 'lym', 'yv', 'g', 'onGround', 'boosted', 'rot', 'mode', 'mini', 'floorY', 'ceilY', 'boostT', 'robotUp', 'ballBuf', 'isOnSlope', 'wasOnSlope', 'slopeVel', 'slopeRot', 'camY', 'spin'];
+const CP_FIELDS = ['x', 'ym', 'lym', 'yv', 'g', 'onGround', 'boosted', 'rot', 'mode', 'mini', 'floorY', 'ceilY', 'boostT', 'robotUp', 'ballBuf', 'isOnSlope', 'wasOnSlope', 'slopeVel', 'slopeRot', 'camY', 'spin', 'noClamp'];
 function cpSnap() { const p = play, s = { orbUsed: new Set(p.orbUsed), touched: new Set(p.touched) }; for (const k of CP_FIELDS) s[k] = p[k]; return s; }
 function cpRestore(s) { const p = play; for (const k of CP_FIELDS) p[k] = s[k]; p.orbUsed = new Set(s.orbUsed); p.touched = new Set(s.touched); }
 function cpPlace() { const p = play; if (p.practice && p.active && !p.dead && !p.done) p.cps.push(cpSnap()); }
@@ -3294,13 +3294,13 @@ function playReset() {
   p.mode = s.mode; p.mini = s.mini; p.g = 1; setSection(p.mode, 105);
   p.x = PLAYER.startX; p.ym = playHalf() + p.floorY; p.lym = p.ym; p.yv = 0; p.onGround = true; p.boosted = false; p.rot = 0;
   p.dead = 0; p.touched = new Set(); p.orbUsed = new Set(); p.attempt++; p.done = 0; p.press = false;
-  p.isOnSlope = p.wasOnSlope = false; p.slopeVel = 0; p.slopeRot = 0; p.boostT = 9; p.robotUp = false; p.ballBuf = false;
+  p.isOnSlope = p.wasOnSlope = false; p.slopeVel = 0; p.slopeRot = 0; p.boostT = 9; p.robotUp = false; p.ballBuf = false; p.noClamp = false;
   if (s.flip && p.ceilY != null) { p.g = -1; p.ym = -(p.ceilY - playHalf()); p.lym = p.ym; }
   p.camY = p.ceilY != null ? p.floorY + 150 : 85;
   if (p.practice && p.cps.length) cpRestore(p.cps[p.cps.length - 1]);
 }
 function hitGround() { play.onGround = true; play.boosted = false; play.yv = 0; }
-function boost(v) { const p = play; p.boosted = p.mode === 'cube'; p.onGround = false; p.robotUp = false; p.yv = v; }
+function boost(v) { const p = play; p.noClamp = true; p.boosted = p.mode === 'cube'; p.onGround = false; p.robotUp = false; p.yv = v; }
 function playDie() { play.dead = 0.0001; }
 // flipping gravity keeps the player in the same place and world speed (the mirrored space is mirrored); the game also halves the speed
 function flipGravity(g, keep) {
@@ -3348,21 +3348,25 @@ function playStep(dtF, spd, ph) {                                  // dtF: time 
   p.lym = p.ym;
   p.x += dx;
   const m = p.mini ? 0.85 : 1;                                      // the vehicles' mini divisor
-  const falling = () => p.yv < 2 * ph.g;                            // PlayerObject::isFalling-ish test: vy below twice the gravity
+  const falling = () => (p.g > 0 ? p.yv < 2 * ph.g : p.yv < -2 * ph.g);   // PlayerObject::isFalling (0x4f4ea0): the world speed against 2 gravity; upside-down it is compared with +2g, which is -2g in this mirrored space
+  if (p.noClamp && (mode === 'ship' || mode === 'ufo' || mode === 'swing') && p.yv > -6.4 / m && p.yv < 8 / m) p.noClamp = false;
   if (mode === 'ship' || mode === 'ufo') {
     let k, c = mode === 'ufo' ? 0.5 : 0.4;
     if (mode === 'ufo') {
       if (p.press && !orbOverlap()) { p.press = false; const t = (p.mini ? 8 : 7) * m; if (p.yv < t) p.yv = t; }   // a flap sets the speed to 7
       k = falling() ? 0.8 : 1.2;
-    } else if (p.hold) { k = -1; if (falling()) c = 0.5; }
-    else k = falling() ? 0.8 : 1.2;
+    } else {                                                        // updateJump 0x4e716b: thrust (k -1) while held, but not while a pad/orb boost is still rising
+      k = 0.8;
+      if (p.hold) { if (!p.noClamp || p.yv < 0) k = -1; if (falling()) c = 0.5; }
+      else { if (p.noClamp && p.yv < 0) k = -1; if (!falling()) k = 1.2; }
+    }
     p.yv -= dtY * VEH_G * k * c / m;
-    p.yv = Math.min(Math.max(p.yv, -6.4 / m), 8 / m);
+    if (!p.noClamp) p.yv = Math.min(Math.max(p.yv, -6.4 / m), 8 / m);
     p.onGround = false;
   } else if (mode === 'swing') {
     if (p.press && !orbOverlap()) { p.press = false; flipGravity(-p.g, 0.8); }
     p.yv -= dtY * VEH_G * (p.mini ? 0.6 : 0.4);
-    p.yv = Math.min(Math.max(p.yv, -8), 8);
+    if (!p.noClamp) p.yv = Math.min(Math.max(p.yv, -8), 8);
     p.onGround = false;
   } else if (mode === 'wave') {
     const dir = p.hold ? 1 : -1;                                    // 45 degrees up while held, 45 down otherwise (63 when mini)
@@ -3373,14 +3377,14 @@ function playStep(dtF, spd, ph) {                                  // dtF: time 
     if (!p.hold) p.ballBuf = false;
     if (p.ballBuf && p.onGround) {
       p.ballBuf = false;
-      if (mode === 'ball') flipGravity(-p.g, 0.3);                  // the flip halves the speed and the ball then keeps 0.6 of it
+      if (mode === 'ball') { flipGravity(-p.g, 0); p.yv = -0.3 * ph.ys * (p.mini ? 0.8 : 1); }   // thrown at jump speed * 0.5 * 0.6 towards the new gravity
       else if (!spiderTeleport()) { /* nothing to jump to */ }
     }
     p.yv = Math.max(p.yv - dtY * VEH_G * 0.6, -PLAYER.maxFall);
     if (p.yv < 0) p.onGround = false;
   } else if (mode === 'robot') {
     const jump = ph.ys * 0.5 * (p.mini ? 0.8 : 1);
-    if (p.onGround && p.hold) { p.onGround = false; p.yv = jump; p.boostT = 0; p.robotUp = true; }
+    if (p.onGround && p.hold && p.press) { p.press = false; p.onGround = false; p.yv = jump; p.boostT = 0; p.robotUp = true; }
     if (p.robotUp && p.hold && p.boostT < 1.5) { p.boostT += dtY * 0.1; p.yv += dtY * ph.g * 0.9; }   // held: gravity is cancelled for 15 steps
     else p.robotUp = false;
     p.yv = Math.max(p.yv - dtY * ph.g * 0.9, -PLAYER.maxFall);
@@ -3395,7 +3399,7 @@ function playStep(dtF, spd, ph) {                                  // dtF: time 
       }
     } else if (p.boosted) {
       p.yv -= ph.g * dtY;
-      if (p.yv < 0) p.boosted = false;
+      if (falling()) p.boosted = false;
     } else {
       if (p.yv < 0) p.onGround = false;
       p.yv = Math.max(p.yv - ph.g * dtY, -PLAYER.maxFall);
