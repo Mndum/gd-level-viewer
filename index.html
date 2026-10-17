@@ -2421,9 +2421,23 @@ function buildTimeline() {
         push(o.raw['52'] === '1' ? ev.pulseG : ev.pulseC, g, { t, fin: rawNum(o, '45', 0), hold: rawNum(o, '46', 0), fout: rawNum(o, '47', 0),
           r: rawNum(o, '7', 255), g: rawNum(o, '8', 255), b: rawNum(o, '9', 255), main: o.raw['65'] === '1', detail: o.raw['66'] === '1' });
         return;
-      case 901:
-        if (o.raw['100'] === '1' || o.raw['394'] === '1') return;
-        push(ev.move, g, { t, src: groupsOf(o), dur, e, rate, dx: rawNum(o, '28', 0), dy: rawNum(o, '29', 0) }); return;
+      case 901: {
+        let dx = rawNum(o, '28', 0), dy = rawNum(o, '29', 0);
+        if (o.raw['100'] === '1' || o.raw['394'] === '1') {           // Target mode (100): the group goes to where the target group (71) sits; Direction mode (394): it goes towards it by a distance (396)
+          const tg = first.get(rawNum(o, '71', 0)), ctr = first.get(rawNum(o, '395', 0)) || first.get(g);
+          if (!tg || !ctr) return;
+          let tx = tg.x - ctr.x, ty = tg.y - ctr.y;
+          if (o.raw['394'] === '1') {
+            const len = Math.hypot(tx, ty), want = rawNum(o, '396', 0);
+            if (len > 0) { tx *= want / len; ty *= want / len; }
+          } else {
+            const axis = rawNum(o, '101', 0);                          // 1 = X only, 2 = Y only
+            if (axis === 1) ty = 0; else if (axis === 2) tx = 0;
+          }
+          dx = tx; dy = ty;
+        }
+        push(ev.move, g, { t, src: groupsOf(o), dur, e, rate, dx, dy }); return;
+      }
       case 1912: {                                               // Random: key 10 = chance of group 51, otherwise group 71 (a preview can't roll dice, so it shows the likelier one)
         const pick = rawNum(o, '10', 50) >= 50 ? g : rawNum(o, '71', 0), d = rawNum(o, '63', 0);
         for (const u of members.get(pick) || []) if (u.raw['62'] === '1') fire(u, t + d, depth + 1);
