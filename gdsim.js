@@ -449960,13 +449960,15 @@ const SIM = (() => {
       M.wr32(L.layer + 0x3e0, (Number(M.rd32(L.layer + 0x3e0)) + 1) >>> 0);
       M.wrf64(L.layer + LO.time, sim.time); M.wr64(L.player + 0xaa8, M.rd64(L.layer + LO.time));
       window(s.rdpt(L.player + s.POS)[0]);
+      const dual = M.rd8(L.layer + 0x422) !== 0n;
+      if (dual) { M.wr64(L.player2 + 0xaa8, M.rd64(L.layer + LO.time)); M.wr64(L.player2 + 0x9d8, M.rd64(L.player + 0x9d8)); M.wr64(L.player2 + 0x9e0, M.rd64(L.player + 0x9e0)); }   // GJBaseGameLayer::update copies these from player 1 to player 2 first
       run(F.pre, { rcx: L.player }, dtF / 60);
+      if (dual) run(F.pre, { rcx: L.player2 }, dtF / 60);                  // both players' timed actions run before either one moves
       run(F.update, { rcx: L.player }, dtF);
       X[2].f[0] = dtF;
       run(F.collide, { rcx: L.layer, rdx: L.player, r9: 0 }, dtF);
       if (M.rd8(L.layer + 0x422) !== 0n) {                            // dual mode: the second player runs the same three calls
-        M.wr64(L.player2 + 0xaa8, M.rd64(L.layer + LO.time));
-        run(F.pre, { rcx: L.player2 }, dtF / 60); run(F.update, { rcx: L.player2 }, dtF);
+        run(F.update, { rcx: L.player2 }, dtF);
         X[2].f[0] = dtF; run(F.collide, { rcx: L.layer, rdx: L.player2, r9: 0 }, dtF);
         if (M.rd8(L.player2 + 0x98c) !== 0n) { sim.died = true; sim.deathObj = 0; }
       }

@@ -3463,12 +3463,12 @@ function applyMovers() {
     m.moving = changed;
   }
 }
-function simStep(m, dtF, noCam) {
+function simStep(m, dtF) {
   const p = play, sim = p.sim, spd = m.speedAt(Math.max(0, p.x)), f = speedFactor(spd);
   if (p.movers.length) applyMovers();
   if (f !== p.spdF) { sim.setSpeed(f); p.spdF = f; }
   if (p.hold && !p.pushed) { sim.push(); p.pushed = true; } else if (!p.hold && p.pushed) { sim.release(); p.pushed = false; }
-  sim.step(dtF, noCam);
+  sim.step(dtF);                                                    // the camera runs inside every 1/240 s step, as in GJBaseGameLayer::update of this exe
   simSync(); visualRotation(p, dtF, spd); if (p.p2) visualRotation(p.p2, dtF, spd);
   p.camOut = sim.camera();
   const mir = p.mirror ? 'scaleX(-1)' : ''; if (canvas.style.transform !== mir) { canvas.style.transform = mir; const g = document.getElementById('gl'); if (g) g.style.transform = mir; }
@@ -3486,17 +3486,15 @@ function playUpdate(delta) {
   p.acc = Math.min((p.acc || 0) + delta, 0.04);
   const realHold = p.hold, tapped = p.tap; p.tap = false;
   if (tapped && !p.hold) p.hold = true;                             // a click that began and ended inside one frame is still a jump
-  let first = true, stepped = false;
+  let first = true;
   const t0 = performance.now();
   while (p.acc >= STEP && !p.dead) {
-    simStep(m, dtF, true);
-    stepped = true;
+    simStep(m, dtF);
     p.acc -= STEP;
     if (performance.now() - t0 > 9) { p.acc = 0; break; }                // never hold a frame for more than ~9 ms: a slow machine plays in slow motion instead of freezing
     if (first) { first = false; p.hold = realHold; }
   }
   p.hold = realHold;
-  if (stepped) { p.sim.updateCamera(dtF); p.camOut = p.sim.camera(); }       // GJBaseGameLayer::updateCamera, once per frame after the steps, as the game does
   if (p.x > m.maxX) { p.done++; if (p.practice) p.cps = []; else p.best = 100; playReset(); }
   if (!p.dead) { p.press = false; if (!p.practice) p.best = Math.max(p.best, Math.min(100, Math.floor(Math.max(0, p.x) / m.maxX * 100))); }
   camApply();
