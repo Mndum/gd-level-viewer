@@ -3322,7 +3322,20 @@ function zKindOf(id) { return EXE_KIND[id] || 0; }
 function zBlendOf(o) {
   try { const cs = zCtx || (level && level.channels); const ch = cs && cs.get(o.col || (typeof defaultMainFor === 'function' ? defaultMainFor(o) : 0)); return ch && ch.blend ? 1 : 0; } catch (e) { return 0; }
 }
-function zDepthOf(o) { return zBatchDepth(zKindOf(o.id), zBlendOf(o), o.zl); }
+// GameObject's main sprite goes one z layer up when its colour blends, the object has a detail sprite and that one does not blend (the exe's addToBatch, FUN_140298e20)
+function zHasDetail(o) {
+  const n = ID_FRAMES[o.id];
+  if (!n) return false;
+  if (typeof EXTRA_LAYERS !== 'undefined' && EXTRA_LAYERS[o.id]) return true;
+  return n.endsWith('_001.png') && !n.includes('_color_') && typeof atlas !== 'undefined' && atlas.frames && atlas.frames.has(n.replace('_001.png', '_color_001.png'));
+}
+function zDetailBlend(o) {
+  try { const cs = zCtx || (level && level.channels); const ch = cs && cs.get(o.col2 || (typeof defaultColFor === 'function' ? defaultColFor(o) : 0)); return ch && ch.blend ? 1 : 0; } catch (e) { return 0; }
+}
+function zDepthOf(o) {
+  const mb = zBlendOf(o);
+  return zBatchDepth(zKindOf(o.id), mb, o.zl + (mb && zHasDetail(o) && !zDetailBlend(o) ? 1 : 0));
+}
 // draw order: batch depth, then z order, then the order added
 function zCmp(a, b) { return (zDepthOf(a) - zDepthOf(b)) || (a.zo - b.zo) || (a.idx - b.idx); }
 let zCtx = null;                                                      // the channels of a level that is being parsed (the sort runs before it is the open level)
