@@ -2480,8 +2480,8 @@ function buildTimeline() {
   // ---- triggers run from a queue in time order, so item counters and timers have the value they would have at that moment ----
   const heap = []; let seqN = 0;
   const hLess = (a, b) => a.t < b.t || (a.t === b.t && a.s < b.s);
-  const sched = (o, t, depth, rm) => {
-    heap.push({ o, t, depth, rm, s: seqN++ });
+  const sched = (o, t, depth, rm, force) => {
+    heap.push({ o, t, depth, rm, force, s: seqN++ });
     let i = heap.length - 1;
     while (i > 0) { const p = (i - 1) >> 1; if (!hLess(heap[i], heap[p])) break; [heap[i], heap[p]] = [heap[p], heap[i]]; i = p; }
   };
@@ -2518,9 +2518,9 @@ function buildTimeline() {
     if (o.raw['56'] === '1') { push(ev.toggle, grp, { t, on: true }); spawnGroup(grp, t, depth, rm); } else push(ev.toggle, grp, { t, on: false });
   };
   const parsePairs = str => { const a = String(str || '').split('.').map(Number).filter(n => !Number.isNaN(n)), out = []; for (let i = 0; i + 1 < a.length; i += 2) out.push([a[i], a[i + 1]]); return out; };
-  const fire = (o, t, depth, rm0) => {
+  const fire = (o, t, depth, rm0, force) => {
     const rm = rm0 || null, rmap = k => (rm && rm.has(k) ? rm.get(k) : k);
-    if (budget-- <= 0 || depth > 80 || t > MAX_T || !o.raw || o.raw['11'] === '1') return;
+    if (budget-- <= 0 || depth > 80 || t > MAX_T || !o.raw || (o.raw['11'] === '1' && !force)) return;
     const dur = rawNum(o, '10', 0), e = rawNum(o, '30', 0), rate = rawNum(o, '85', 2), g = rmap(rawNum(o, '51', 0));
     const c = colorTriggerInfo(o);
     if (c) { push(ev.chan, c.chan, { t, dur: c.dur, to: [c.r, c.g, c.b, c.a], blend: c.blend, player: c.player, copy: c.copy }); return; }
@@ -2690,7 +2690,7 @@ function buildTimeline() {
     if (o.cls !== 'trigger' || !o.raw || o.raw['62'] === '1') continue;      // spawn-triggered ones fire when something spawns them
     sched(o, tOf(o.x), 0, null);
   }
-  while (heap.length) { const q = hPop(); fire(q.o, q.t, q.depth, q.rm); }
+  while (heap.length) { const q = hPop(); fire(q.o, q.t, q.depth, q.rm, q.force); }
   const byT = (a, b) => a.t - b.t;
   for (const m of [ev.chan, ev.pulseC, ev.pulseG, ev.move, ev.follow, ev.alpha, ev.toggle, ev.rot, ev.scale, ev.sh]) for (const arr of m.values()) arr.sort(byT);
   for (const arr of [ev.zoom, ev.coff, ev.crot, ev.shock, ev.stops, ev.area, ev.areaEdit, ev.areaStop]) arr.sort(byT);
@@ -2700,7 +2700,19 @@ function buildTimeline() {
   maxX += 300;
   const hasShaders = ev.sh.size > 0 || ev.shock.length > 0;
   const hasCamera = ev.zoom.length + ev.coff.length + ev.crot.length > 0;
-  return { tOf, speedAt, ev, first, maxX, hasShaders, hasCamera };
+  // ---- what the run itself causes (touch, collision): events are added at the current time, then everything is sorted again ----
+  const resort = () => {
+    for (const m of [ev.chan, ev.pulseC, ev.pulseG, ev.move, ev.follow, ev.alpha, ev.toggle, ev.rot, ev.scale, ev.sh]) for (const arr of m.values()) arr.sort(byT);
+    for (const arr of [ev.zoom, ev.coff, ev.crot, ev.shock, ev.stops, ev.area, ev.areaEdit, ev.areaStop]) arr.sort(byT);
+  };
+  const drain = () => { budget = Math.max(budget, 4000); while (heap.length) { const q = hPop(); fire(q.o, q.t, q.depth, q.rm, q.force); } resort(); tl.cacheX = null; };
+  const dynFire = (o, T) => { sched(o, T, 0, null, true); drain(); };
+  const dynAct = (grp, on, spawn, T) => {
+    if (!grp) return;
+    if (on) { push(ev.toggle, grp, { t: T, on: true }); if (spawn) spawnGroup(grp, T, 0, null); } else push(ev.toggle, grp, { t: T, on: false });
+    drain();
+  };
+  return { tOf, speedAt, ev, first, maxX, hasShaders, hasCamera, dynFire, dynAct };
 }
 function timelineModel() {
   if (tl.dirty || !tl.model) { tl.model = buildTimeline(); tl.dirty = false; tl.cacheX = null; }
@@ -3783,8 +3795,72 @@ function playReset() {
   if (s.mini) p.sim.setMini(true);
   if (s.flip) p.sim.setUpsideDown(true);
   p.dead = 0; p.attempt++; p.done = 0; p.press = false;
+  rtSetup();
   simSync(); p.camOut = p.sim.camera(); camApply();
   if (p.practice && p.cps.length) { cpRestore(p.cps[p.cps.length - 1]); camApply(); }
+}
+// ---- triggers the run itself sets off: Touch, touch-triggered triggers, Collision / Instant Collision with Collision blocks, and the Player Touch Toggle block ----
+const RT = { on: false, pend: [], tt: [], coll: [], inst: [], tog: [], blocks: new Map() };
+function rtSetup() {
+  RT.on = false; RT.pend = []; RT.tt = []; RT.coll = []; RT.inst = []; RT.tog = []; RT.blocks = new Map();
+  if (!level) return;
+  tl.dirty = true; timelineModel();                                      // drops the events a previous attempt added
+  for (const o of level.objs) {
+    if (!o.raw) continue;
+    if (o.cls === 'trigger') {
+      if (o.id === 1595) RT.tt.push({ o, x: o.x, st: true });
+      else if (o.raw['11'] === '1') RT.pend.push({ o, x: o.x, done: false });
+      else if (o.id === 1815) RT.coll.push({ o, x: o.x, inn: false });
+      else if (o.id === 3609) RT.inst.push({ o, x: o.x, done: false });
+    } else if (o.id === 1816) { const k = Number(o.raw['80']) || 0; if (!RT.blocks.has(k)) RT.blocks.set(k, []); RT.blocks.get(k).push(o); }
+    else if (o.id === 3643) RT.tog.push({ o, inn: false });
+  }
+  RT.on = RT.pend.length + RT.tt.length + RT.coll.length + RT.inst.length + RT.tog.length > 0;
+}
+function rtPress(down) {
+  if (!RT.on) return;
+  const p = play, m = timelineModel(), T = m.tOf(p.x);
+  if (down) for (const a of RT.pend) if (!a.done && a.x <= p.x) { a.done = true; m.dynFire(a.o, T); }
+  for (const t of RT.tt) {
+    if (t.x > p.x) continue;
+    const r = t.o.raw, g = Number(r['51']) || 0, hold = r['81'] === '1', tg = Number(r['82']) || 0;       // 82: 0 toggles, 1 on, 2 off
+    if (Number(r['198']) === 2) continue;                                                                 // player 2 only: one player here
+    let on;
+    if (hold) on = down ? tg !== 2 : tg === 2;
+    else if (!down) continue;
+    else on = tg === 1 ? true : tg === 2 ? false : !t.st;
+    t.st = on; m.dynAct(g, on, true, T);
+  }
+}
+function rtRect(o) { const gs = typeof groupStateFor === 'function' ? groupStateFor(o) : null, x = o.x + (gs ? gs.dx : 0), y = o.y + (gs ? gs.dy : 0), w = 15 * Math.abs(o.sx), h = 15 * Math.abs(o.sy); return [x - w, y - h, x + w, y + h]; }
+function rtHit(a, b) { return a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1]; }
+function rtStep() {
+  const p = play, m = timelineModel(), T = m.tOf(p.x), h = playHalf(), cy = p.g * p.ym, pr = [p.x - h, cy - h, p.x + h, cy + h];
+  const blk = id => RT.blocks.get(id) || [];
+  for (const c of RT.coll) {
+    if (c.x > p.x) continue;
+    const r = c.o.raw, A = blk(Number(r['80']) || 0), playerB = r['138'] === '1' || r['200'] === '1' || r['201'] === '1';
+    let hit = false;
+    if (playerB) hit = A.some(o => rtHit(rtRect(o), pr));
+    else { const B = blk(Number(r['95']) || 0); hit = A.some(a => { const ra = rtRect(a); return B.some(b => rtHit(ra, rtRect(b))); }); }
+    if (hit !== c.inn) {
+      c.inn = hit;
+      if (hit !== (r['93'] === '1')) m.dynAct(Number(r['51']) || 0, r['56'] === '1', true, T);                 // on enter, or on exit when 93 is set
+    }
+  }
+  for (const c of RT.inst) {                                           // Instant Collision: looked at once, when the player reaches it
+    if (c.done || c.x > p.x) continue;
+    c.done = true;
+    const r = c.o.raw, A = blk(Number(r['80']) || 0), B = blk(Number(r['95']) || 0);
+    const playerB = r['138'] === '1' || r['200'] === '1';
+    const hit = playerB ? A.some(o => rtHit(rtRect(o), pr)) : A.some(a => { const ra = rtRect(a); return B.some(b => rtHit(ra, rtRect(b))); });
+    m.dynAct(hit ? Number(r['51']) || 0 : Number(r['71']) || 0, true, true, T);
+  }
+  for (const t of RT.tog) {                                            // Player Touch Toggle block: touching it enables (or disables) its group once per touch
+    const hit = rtHit(rtRect(t.o), pr);
+    if (hit && !t.inn) { const r = t.o.raw; m.dynAct(Number(r['51']) || 0, r['56'] === '1', true, T); }
+    t.inn = hit;
+  }
 }
 function playDie() { play.dead = 0.0001; }
 function applyMovers() {
@@ -3810,9 +3886,10 @@ function simStep(m, dtF) {
   const p = play, sim = p.sim, spd = m.speedAt(Math.max(0, p.x)), f = speedFactor(spd);
   if (p.movers.length) applyMovers();
   if (f !== p.spdF) { sim.setSpeed(f); p.spdF = f; }
-  if (p.hold && !p.pushed) { sim.push(); p.pushed = true; } else if (!p.hold && p.pushed) { sim.release(); p.pushed = false; }
+  if (p.hold && !p.pushed) { sim.push(); p.pushed = true; rtPress(true); } else if (!p.hold && p.pushed) { sim.release(); p.pushed = false; rtPress(false); }
   sim.step(dtF);                                                    // the camera runs inside every 1/240 s step, as in GJBaseGameLayer::update of this exe
   simSync(); visualRotation(p, dtF, spd); if (p.p2) visualRotation(p.p2, dtF, spd);
+  if (RT.on) rtStep();
   p.camOut = sim.camera();
   const mir = p.mirror ? 'scaleX(-1)' : ''; if (canvas.style.transform !== mir) { canvas.style.transform = mir; const g = document.getElementById('gl'); if (g) g.style.transform = mir; }
   if (sim.died) { sim.died = false; playDie(); }
