@@ -349,7 +349,7 @@ fetch('assets/zdefaults.json').then(r => r.json()).then(j => {
   ZDEF = j;
   if (typeof level !== 'undefined' && level) {
     for (const o of level.objs) { o.zl = zLayerOf(o.raw, o.id); o.zo = zOrderOf(o.raw, o.id); }
-    level.zSorted = level.objs.slice().sort(zCmp);
+    level.zSorted = zSortObjs(level.objs.slice());
     if (typeof draw === 'function') draw();
   }
 }).catch(() => { });
@@ -384,7 +384,7 @@ function parseLevel(levelStr) {
       raw: p, fields: f, src: parts[i], dirty: false, scaleDirty: false, uni
     });
   }
-  zCtx = channels; const zSorted = objs.slice().sort(zCmp); zCtx = null;
+  zCtx = channels; const zSorted = zSortObjs(objs.slice()); zCtx = null;
   return { channels, objs, header: parts[0], zSorted, extra, nextIdx: objs.length, edited: false };
 }
 
@@ -591,7 +591,7 @@ function paintSprite(img, fi, o, sx, sy, dim) {
   ctx.restore();
 }
 // returns true when the object was handled (drawn, or intentionally invisible)
-function drawSprite(o, sx, sy, dim) {
+function drawSprite(o, sx, sy, dim, part) {
   if (o.id === 914 && typeof drawTextObject === 'function' && drawTextObject(o, sx, sy, dim)) return true;
   const name = ID_FRAMES[o.id];
   if (!name) return false;
@@ -600,14 +600,16 @@ function drawSprite(o, sx, sy, dim) {
   if (!fi) return false;
   const img = tintedFrame(fi, channelHexP(o.col || (typeof defaultMainFor === 'function' ? defaultMainFor(o) : 0), 'main'));
   if (!img) return false;
-  if (typeof drawChildren === 'function') drawChildren(o, sx, sy, dim, -1);
-  paintSprite(img, fi, o, sx, sy, dim);
-  if (typeof drawChildren === 'function') drawChildren(o, sx, sy, dim, 0);
-  if (typeof EXTRA_LAYERS !== 'undefined' && EXTRA_LAYERS[o.id]) {
+  if (part !== 'detail') {
+    if (typeof drawChildren === 'function') drawChildren(o, sx, sy, dim, -1);
+    paintSprite(img, fi, o, sx, sy, dim);
+    if (typeof drawChildren === 'function') drawChildren(o, sx, sy, dim, 0);
+  }
+  if (part !== 'main' && typeof EXTRA_LAYERS !== 'undefined' && EXTRA_LAYERS[o.id]) {
     const xf = atlas.frames.get(EXTRA_LAYERS[o.id]), ximg = xf && tintedFrame(xf, channelHexP(o.col2 || 0, 'detail'));
     if (ximg) paintSprite(ximg, xf, o, sx, sy, dim);
   }
-  if (name.endsWith('_001.png') && !name.includes('_color_')) {
+  if (part !== 'main' && name.endsWith('_001.png') && !name.includes('_color_')) {
     const df = (typeof DETAIL_SKIP !== 'undefined' && DETAIL_SKIP.has(o.id)) ? null : atlas.frames.get(name.replace('_001.png', '_color_001.png'));
     if (df) {
       const dimg = tintedFrame(df, channelHexP(o.col2 || defaultColFor(o), 'detail'));
@@ -896,9 +898,11 @@ function draw() {
     const big = !draggingObjs && level.zSorted.length > 3000;
     let drawList = level.zSorted;
     if (big) { try { drawList = cull ? gridList(level, cx0, cx1) : movingList(level, cx0, cx1, cy0, cy1); } catch (e) { drawList = level.zSorted; } }
+    const zItems = zBuildItems(drawList);
     const playOn = typeof play === 'object' && play.active; if (playOn) play.bodyDrawn = false;
-    for (const o of drawList) {
-      if (playOn && !play.bodyDrawn && typeof drawPlayerBodies === 'function' && zDepthOf(o) > Z_PLAYER_DEPTH) drawPlayerBodies();    // objects on T1 and above are drawn over the player
+    for (let zi_ = 0; zi_ < zItems.length; zi_++) {
+      const zit = zItems[zi_], o = zit.o;
+      if (playOn && !play.bodyDrawn && typeof drawPlayerBodies === 'function' && zit.k > Z_PLAYER_DEPTH) drawPlayerBodies();    // sprites on T1 and above are drawn over the player
       if (!visible(o)) continue;
       if (cull) { const r = 30 * Math.max(o.sx, o.sy) + 60; if (o.x < cx0 - r || o.x > cx1 + r || o.y < cy0 - r || o.y > cy1 + r) continue; }
       if (dots) {
@@ -908,11 +912,11 @@ function draw() {
           let c = dotColors.get(key); if (c === undefined) { c = colorFor(o, o.cls === 'deco' ? 0.55 : 0.9); dotColors.set(key, c); }
           let arr = dots.get(c); if (!arr) { arr = []; dots.set(c, arr); }
           const [sx, sy] = toScreen(o.x, o.y); const s = Math.max(1.6, reach * 0.9);
-          arr.push(sx - s / 2, sy - s / 2, s);
+          if (zit.p !== 'detail') arr.push(sx - s / 2, sy - s / 2, s);
           continue;
         }
       }
-      drawObject(o, (highlight !== null && o.id !== highlight) || layerOff(o));
+      drawObject(o, (highlight !== null && o.id !== highlight) || layerOff(o), zit.p);
     }
     if (dots) for (const [c, arr] of dots) { ctx.fillStyle = c; for (let i = 0; i < arr.length; i += 3) ctx.fillRect(arr[i], arr[i + 1], arr[i + 2], arr[i + 2]); }
   } else {
@@ -950,7 +954,7 @@ function draw() {
   if (typeof drawPlayer === 'function') drawPlayer();
   applyEffects();
 }
-function drawObject(o0, dim) {
+function drawObject(o0, dim, part) {
   let o = o0;
   const gs = groupStateFor(o0);
   if (gs && gs.hidden) return;
@@ -974,8 +978,9 @@ function drawObject(o0, dim) {
   const reach = Math.max(w, h);
   if (sx < -reach || sx > canvas._w + reach || sy < -reach || sy > canvas._h + reach) return;
   const a = dim ? 0.12 : (o.cls === 'deco' ? 0.55 : 0.9);
-  if (reach < 2.2) { ctx.fillStyle = colorFor(o, a); ctx.fillRect(sx - 1, sy - 1, 2, 2); return; }
-  if (atlas.ready && drawSprite(o, sx, sy, dim)) return;
+  if (reach < 2.2) { if (part !== 'detail') { ctx.fillStyle = colorFor(o, a); ctx.fillRect(sx - 1, sy - 1, 2, 2); } return; }
+  if (atlas.ready && drawSprite(o, sx, sy, dim, part)) return;
+  if (part === 'detail') return;
   ctx.save();
   ctx.translate(sx, sy);
   ctx.rotate((o.rot * Math.PI) / 180);
@@ -1787,7 +1792,7 @@ function pruneSelection() {
 function afterEdit(structural) {
   gridStamp++;                                                // the view's object index is out of date
   if (structural) {
-    level.zSorted = level.objs.slice().sort(zCmp);
+    level.zSorted = zSortObjs(level.objs.slice());
     pruneSelection();
   }
   // the object counts in the side panel only change when objects are added or removed, and rebuilding it is slow on big levels, so it
@@ -3322,22 +3327,54 @@ function zKindOf(id) { return EXE_KIND[id] || 0; }
 function zBlendOf(o) {
   try { const cs = zCtx || (level && level.channels); const ch = cs && cs.get(o.col || (typeof defaultMainFor === 'function' ? defaultMainFor(o) : 0)); return ch && ch.blend ? 1 : 0; } catch (e) { return 0; }
 }
-// GameObject's main sprite goes one z layer up when its colour blends, the object has a detail sprite and that one does not blend (the exe's addToBatch, FUN_140298e20)
+// An object has two sprites in the exe: the main one and the detail (colour) one. Each goes into its own batch node (FUN_140298e20 and FUN_140299030):
+// the main sprite one z layer up when its colour blends, the object has a detail sprite and that one does not; the detail sprite on its own layer.
+const zHasDetailCache = new Map();
 function zHasDetail(o) {
+  const ready = typeof atlas !== 'undefined' && atlas.ready;
+  if (ready && zHasDetailCache.has(o.id)) return zHasDetailCache.get(o.id);
   const n = ID_FRAMES[o.id];
-  if (!n) return false;
-  if (typeof EXTRA_LAYERS !== 'undefined' && EXTRA_LAYERS[o.id]) return true;
-  return n.endsWith('_001.png') && !n.includes('_color_') && typeof atlas !== 'undefined' && atlas.frames && atlas.frames.has(n.replace('_001.png', '_color_001.png'));
+  let r = false;
+  if (n && n !== 'emptyFrame.png' && o.id !== 914) {
+    if (typeof EXTRA_LAYERS !== 'undefined' && EXTRA_LAYERS[o.id]) r = true;
+    else r = n.endsWith('_001.png') && !n.includes('_color_') && !(typeof DETAIL_SKIP !== 'undefined' && DETAIL_SKIP.has(o.id)) && ready && atlas.frames.has(n.replace('_001.png', '_color_001.png'));
+  }
+  if (ready) zHasDetailCache.set(o.id, r);
+  return r;
 }
 function zDetailBlend(o) {
   try { const cs = zCtx || (level && level.channels); const ch = cs && cs.get(o.col2 || (typeof defaultColFor === 'function' ? defaultColFor(o) : 0)); return ch && ch.blend ? 1 : 0; } catch (e) { return 0; }
 }
-function zDepthOf(o) {
-  const mb = zBlendOf(o);
-  return zBatchDepth(zKindOf(o.id), mb, o.zl + (mb && zHasDetail(o) && !zDetailBlend(o) ? 1 : 0));
+let zStamp = 1, zAtlasSeen = false;
+function zPrep(o) {
+  if (o._zs === zStamp) return;
+  const mb = zBlendOf(o), hd = zHasDetail(o), kind = zKindOf(o.id), db = hd ? zDetailBlend(o) : 0;
+  o._zm = zBatchDepth(kind, mb, o.zl + (mb && hd && !db ? 1 : 0));
+  o._zd = hd ? zBatchDepth(kind, db, o.zl) : null;
+  o._zs = zStamp;
 }
+function zDepthOf(o) { zPrep(o); return o._zm; }
 // draw order: batch depth, then z order, then the order added
-function zCmp(a, b) { return (zDepthOf(a) - zDepthOf(b)) || (a.zo - b.zo) || (a.idx - b.idx); }
+function zCmp(a, b) { zPrep(a); zPrep(b); return (a._zm - b._zm) || (a.zo - b.zo) || (a.idx - b.idx); }
+function zSortObjs(arr) { zStamp++; return arr.sort(zCmp); }
+// the things to draw for a list of objects (already in main-sprite order): an object with a detail sprite gives two items, merged by their own depths
+function zBuildItems(list) {
+  if (typeof atlas !== 'undefined' && atlas.ready && !zAtlasSeen) { zAtlasSeen = true; zStamp++; }
+  const main = [], dets = [];
+  for (let i = 0; i < list.length; i++) {
+    const o = list[i]; zPrep(o);
+    if (o._zd === null) main.push({ o, p: undefined, k: o._zm });
+    else { main.push({ o, p: 'main', k: o._zm }); dets.push({ o, p: 'detail', k: o._zd }); }
+  }
+  if (!dets.length) return main;
+  const cmp = (a, b) => (a.k - b.k) || (a.o.zo - b.o.zo) || (a.o.idx - b.o.idx) || ((a.p === 'detail' ? 1 : 0) - (b.p === 'detail' ? 1 : 0));
+  main.sort(cmp); dets.sort(cmp);
+  const out = new Array(main.length + dets.length); let i = 0, j = 0, n = 0;
+  while (i < main.length && j < dets.length) out[n++] = cmp(main[i], dets[j]) <= 0 ? main[i++] : dets[j++];
+  while (i < main.length) out[n++] = main[i++];
+  while (j < dets.length) out[n++] = dets[j++];
+  return out;
+}
 let zCtx = null;                                                      // the channels of a level that is being parsed (the sort runs before it is the open level)
 const Z_PLAYER_DEPTH = 59;                                           // PlayerObject's z order in the object layer
 </script>
