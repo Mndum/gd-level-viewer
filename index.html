@@ -835,6 +835,13 @@ function unitSize(id) {
   if (atlas.ready) unitSizes.set(id, u);
   return u;
 }
+// editor layers (keys 20 and 61): with one chosen in Go To Layer, objects that are not on it are faded and cannot be picked, like in the editor
+function layerOff(o) {
+  const L = typeof edLayer === 'function' ? edLayer() : -1;
+  if (L < 0) return false;
+  const a = Number(o.raw['20']) || 0, b = Number(o.raw['61']) || 0;
+  return !(a === L || (b !== 0 && b === L));
+}
 function visible(o) {
   if (o.cls === 'deco' && !opt.deco) return false;
   if (o.cls === 'trigger' && !opt.trig) return false;
@@ -905,7 +912,7 @@ function draw() {
           continue;
         }
       }
-      drawObject(o, highlight !== null && o.id !== highlight);
+      drawObject(o, (highlight !== null && o.id !== highlight) || layerOff(o));
     }
     if (dots) for (const [c, arr] of dots) { ctx.fillStyle = c; for (let i = 0; i < arr.length; i += 3) ctx.fillRect(arr[i], arr[i + 1], arr[i + 2], arr[i + 2]); }
   } else {
@@ -913,7 +920,7 @@ function draw() {
     for (const cls of order) {
       for (const o of level.objs) {
         if (o.cls !== cls || !visible(o)) continue;
-        drawObject(o, highlight !== null && o.id !== highlight);
+        drawObject(o, (highlight !== null && o.id !== highlight) || layerOff(o));
       }
     }
   }
@@ -1027,7 +1034,7 @@ function updateHover(sx, sy) {
   const [wx, wy] = toWorld(sx, sy);
   let best = null, bestD = Infinity;
   for (const o of level.objs) {
-    if (!visible(o)) continue;
+    if (!visible(o) || layerOff(o)) continue;
     const rx = 15 * Math.max(o.sx, 0.3), ry = 15 * Math.max(o.sy, 0.3);
     const dx = Math.abs(wx - o.x), dy = Math.abs(wy - o.y);
     if (dx <= rx && dy <= ry) {
@@ -4411,6 +4418,7 @@ function goptOverlay() {
   rp.layerL2 = put(mk('button', 'a rb hid'), { cx: 1663, cy: 665, w: 58, h: 72, ax: 'r' });
   live(rp.layerL2.appendChild(img()), () => frameURL(FR.arrow3));
   S.layer = -1;
+  window.edLayer = () => S.layer;                                       // the editor layer chosen with Go To Layer (-1 = All)
   rp.layerN = label(() => (S.layer < 0 ? 'All' : String(S.layer)), 40, { cx: 1763, cy: 665, w: 60, ax: 'r' });
   rp.layerR = put(mk('button', 'a rb hid'), { cx: 1866, cy: 665, w: 58, h: 72, ax: 'r' });
   { const i = img(); i.style.transform = 'scaleX(-1)'; rp.layerR.appendChild(i); live(i, () => frameURL(FR.arrow3)); }
