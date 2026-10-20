@@ -889,7 +889,9 @@ function draw() {
     const big = !draggingObjs && level.zSorted.length > 3000;
     let drawList = level.zSorted;
     if (big) { try { drawList = cull ? gridList(level, cx0, cx1) : movingList(level, cx0, cx1, cy0, cy1); } catch (e) { drawList = level.zSorted; } }
+    const playOn = typeof play === 'object' && play.active; if (playOn) play.bodyDrawn = false;
     for (const o of drawList) {
+      if (playOn && !play.bodyDrawn && o.zl >= 4 && typeof drawPlayerBodies === 'function') drawPlayerBodies();    // objects on T1 and above are drawn over the player
       if (!visible(o)) continue;
       if (cull) { const r = 30 * Math.max(o.sx, o.sy) + 60; if (o.x < cx0 - r || o.x > cx1 + r || o.y < cy0 - r || o.y > cy1 + r) continue; }
       if (dots) {
@@ -3609,6 +3611,12 @@ function drawPlayer() {
     ctx.save(); ctx.fillStyle = '#6bff3a'; ctx.strokeStyle = '#0b3a00'; ctx.lineWidth = Math.max(1.5, 2 * view.zoom);
     ctx.beginPath(); ctx.moveTo(cx, cy - r); ctx.lineTo(cx + r, cy); ctx.lineTo(cx, cy + r); ctx.lineTo(cx - r, cy); ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.restore();
   }
+  if (!play.bodyDrawn) drawPlayerBodies();
+}
+// the player's depth in the exe: it is added to the object layer at z order 59, the z layers B1 and below sit under it (depths up to -5) and T1 and above over it (120 and up)
+function drawPlayerBodies() {
+  if (!play.active || !level) return;
+  play.bodyDrawn = true;
   const a = play.dead ? Math.max(0, 1 - play.dead * 3) : 1;
   drawOne(play.x, play.g * play.ym, play.g, play.rot, play.mode, play.mini, a, playHalf());
   const q = play.p2;
