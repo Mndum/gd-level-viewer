@@ -3324,9 +3324,15 @@ function zBatchDepth(kind, blend, z) {
   const d = ZB_OFFZ[row[row.length - 1][1]]; return d === undefined ? zBatchDepth(0, blend, z) : d;
 }
 function zKindOf(id) { return EXE_KIND[id] || 0; }
-function zBlendOf(o) {
-  try { const cs = zCtx || (level && level.channels); const ch = cs && cs.get(o.col || (typeof defaultMainFor === 'function' ? defaultMainFor(o) : 0)); return ch && ch.blend ? 1 : 0; } catch (e) { return 0; }
+// blending as it is right now (a Colour trigger can switch it on or off for a channel while previewing or playing); a level being parsed uses its header
+function zChanBlend(id) {
+  try {
+    if (zCtx) { const c = zCtx.get(id); return c && c.blend ? 1 : 0; }
+    const c = typeof chan === 'function' ? chan(id) : level && level.channels.get(id);
+    return c && c.blend ? 1 : 0;
+  } catch (e) { return 0; }
 }
+function zBlendOf(o) { return zChanBlend(o.col || (typeof defaultMainFor === 'function' ? defaultMainFor(o) : 0)); }
 // An object has two sprites in the exe: the main one and the detail (colour) one. Each goes into its own batch node (FUN_140298e20 and FUN_140299030):
 // the main sprite one z layer up when its colour blends, the object has a detail sprite and that one does not; the detail sprite on its own layer.
 const zHasDetailCache = new Map();
@@ -3342,10 +3348,19 @@ function zHasDetail(o) {
   if (ready) zHasDetailCache.set(o.id, r);
   return r;
 }
-function zDetailBlend(o) {
-  try { const cs = zCtx || (level && level.channels); const ch = cs && cs.get(o.col2 || (typeof defaultColFor === 'function' ? defaultColFor(o) : 0)); return ch && ch.blend ? 1 : 0; } catch (e) { return 0; }
+function zDetailBlend(o) { return zChanBlend(o.col2 || (typeof defaultColFor === 'function' ? defaultColFor(o) : 0)); }
+let zStamp = 1, zAtlasSeen = false, zSig = '';
+// which colour-trigger channels are blending right now; when that changes every depth is worked out again
+function zBlendSig() {
+  try {
+    if (zCtx || typeof timelineModel !== 'function' || typeof chan !== 'function') return '';
+    const m = timelineModel();
+    if (!m || !m.ev || !m.ev.chan || !m.ev.chan.size) return '';
+    let s = '';
+    for (const id of m.ev.chan.keys()) { const c = chan(id); if (c && c.blend) s += id + ','; }
+    return s;
+  } catch (e) { return ''; }
 }
-let zStamp = 1, zAtlasSeen = false;
 function zPrep(o) {
   if (o._zs === zStamp) return;
   const mb = zBlendOf(o), hd = zHasDetail(o), kind = zKindOf(o.id), db = hd ? zDetailBlend(o) : 0;
@@ -3360,6 +3375,12 @@ function zSortObjs(arr) { zStamp++; return arr.sort(zCmp); }
 // the things to draw for a list of objects (already in main-sprite order): an object with a detail sprite gives two items, merged by their own depths
 function zBuildItems(list) {
   if (typeof atlas !== 'undefined' && atlas.ready && !zAtlasSeen) { zAtlasSeen = true; zStamp++; }
+  const sig = zBlendSig();
+  if (sig !== zSig) {                                                    // blending changed: new depths, so a new order (the grid of a big level is rebuilt next frame)
+    zSig = sig; zStamp++;
+    if (level && level.zSorted) { level.zSorted.sort(zCmp); if (typeof gridStamp !== 'undefined') gridStamp++; }
+    if (!level || list !== level.zSorted) list = list.slice().sort(zCmp);
+  }
   const main = [], dets = [];
   for (let i = 0; i < list.length; i++) {
     const o = list[i]; zPrep(o);
