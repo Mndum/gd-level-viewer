@@ -2477,9 +2477,51 @@ function buildTimeline() {
   }
   const MAX_T = 1800;
   let budget = 40000;
-  const fire = (o, t, depth) => {
+  // ---- triggers run from a queue in time order, so item counters and timers have the value they would have at that moment ----
+  const heap = []; let seqN = 0;
+  const hLess = (a, b) => a.t < b.t || (a.t === b.t && a.s < b.s);
+  const sched = (o, t, depth, rm) => {
+    heap.push({ o, t, depth, rm, s: seqN++ });
+    let i = heap.length - 1;
+    while (i > 0) { const p = (i - 1) >> 1; if (!hLess(heap[i], heap[p])) break; [heap[i], heap[p]] = [heap[p], heap[i]]; i = p; }
+  };
+  const hPop = () => {
+    const top = heap[0], last = heap.pop();
+    if (heap.length) {
+      heap[0] = last; let i = 0;
+      for (;;) { const l = 2 * i + 1, r = l + 1; let m = i; if (l < heap.length && hLess(heap[l], heap[m])) m = l; if (r < heap.length && hLess(heap[r], heap[m])) m = r; if (m === i) break; [heap[i], heap[m]] = [heap[m], heap[i]]; i = m; }
+    }
+    return top;
+  };
+  const items = new Map(), timers = new Map(), watchers = [], seqState = new Map();
+  const itemGet = id => items.get(id) || 0;
+  const timerGet = (id, t) => {
+    const T = timers.get(id); if (!T) return 0;
+    const v = T.running ? T.base + (t - T.t0) * T.mod : T.base;
+    return T.stop !== null && v >= T.stop ? T.stop : v;
+  };
+  // Item Edit / Compare operands: type 1 item, 2 timer, 3 points, 4 level time, 5 attempts (0 = item)
+  const itemVal = (typ, id, t) => typ === 2 ? timerGet(id, t) : typ === 3 ? 0 : typ === 4 ? t : typ === 5 ? 1 : itemGet(id);
+  const absNeg = (v, m) => m === 1 ? Math.abs(v) : m === 2 ? -v : v;
+  const rnd = (v, m) => m === 1 ? Math.round(v) : m === 2 ? Math.floor(v) : m === 3 ? Math.ceil(v) : Math.trunc(v);       // none drops the decimals
+  const arith = (op, a, b) => op === 1 ? a + b : op === 2 ? a - b : op === 3 ? a * b : op === 4 ? (b === 0 ? 0 : a / b) : b;
+  const setItem = (id, v, t, depth) => {
+    v = Math.trunc(v);
+    if (itemGet(id) === v && items.has(id)) return;
+    items.set(id, v);
+    for (const w of watchers) if (w.item === id && w.on && (v === w.target) && (w.multi || !w.done)) { w.done = true; w.act(Math.max(t, w.t0), depth); }
+  };
+  const spawnGroup = (grp, t, depth, rm) => { for (const u of members.get(grp) || []) if (u.raw['62'] === '1') sched(u, t, depth + 1, rm); };
+  // enable (and spawn) or disable a group, the way Count, Instant Count and Collision triggers act on their target
+  const actGroup = (o, grp, t, depth, rm) => {
+    if (!grp) return;
+    if (o.raw['56'] === '1') { push(ev.toggle, grp, { t, on: true }); spawnGroup(grp, t, depth, rm); } else push(ev.toggle, grp, { t, on: false });
+  };
+  const parsePairs = str => { const a = String(str || '').split('.').map(Number).filter(n => !Number.isNaN(n)), out = []; for (let i = 0; i + 1 < a.length; i += 2) out.push([a[i], a[i + 1]]); return out; };
+  const fire = (o, t, depth, rm0) => {
+    const rm = rm0 || null, rmap = k => (rm && rm.has(k) ? rm.get(k) : k);
     if (budget-- <= 0 || depth > 80 || t > MAX_T || !o.raw || o.raw['11'] === '1') return;
-    const dur = rawNum(o, '10', 0), e = rawNum(o, '30', 0), rate = rawNum(o, '85', 2), g = rawNum(o, '51', 0);
+    const dur = rawNum(o, '10', 0), e = rawNum(o, '30', 0), rate = rawNum(o, '85', 2), g = rmap(rawNum(o, '51', 0));
     const c = colorTriggerInfo(o);
     if (c) { push(ev.chan, c.chan, { t, dur: c.dur, to: [c.r, c.g, c.b, c.a], blend: c.blend, player: c.player, copy: c.copy }); return; }
     switch (o.id) {
@@ -2514,8 +2556,8 @@ function buildTimeline() {
         push(ev.move, g, { t, src: groupsOf(o), dur, e, rate, dx: lockX ? 0 : dx, dy: lockY ? 0 : dy, lockX, lockY, mx, my, px0: o.x, xOf, dyn, grp: g }); return;
       }
       case 1912: {                                               // Random: key 10 = chance of group 51, otherwise group 71 (a preview can't roll dice, so it shows the likelier one)
-        const pick = rawNum(o, '10', 50) >= 50 ? g : rawNum(o, '71', 0), d = rawNum(o, '63', 0);
-        for (const u of members.get(pick) || []) if (u.raw['62'] === '1') fire(u, t + d, depth + 1);
+        const pick = rawNum(o, '10', 50) >= 50 ? g : rmap(rawNum(o, '71', 0)), d = rawNum(o, '63', 0);
+        spawnGroup(pick, t + d, depth, rm);
         return;
       }
       case 1616:                                                 // Stop: acts on the triggers whose own group is the target; option 580 = 0 stop, 1 pause, 2 resume (from the exe)
@@ -2525,11 +2567,92 @@ function buildTimeline() {
       case 1007: push(ev.alpha, g, { t, dur, e, rate, to: [rawNum(o, '35', 1)] }); return;
       case 1049:
         push(ev.toggle, g, { t, on: o.raw['56'] === '1' });
-        if (o.raw['56'] === '1') for (const u of members.get(g) || []) if (u.raw['62'] === '1') fire(u, t, depth + 1);
+        if (o.raw['56'] === '1') spawnGroup(g, t, depth, rm);
         return;
-      case 1268: {
-        const d = rawNum(o, '63', 0);
-        for (const u of members.get(g) || []) if (u.raw['62'] === '1') fire(u, t + d, depth + 1);
+      case 1268: {                                               // Spawn: delay 63, remaps 442 (reset 581), ordered 441 (runs the group's triggers in their Spawn Order, key 115)
+        const d = Math.max(0, rawNum(o, '63', 0));
+        let nrm = o.raw['581'] === '1' ? null : (rm ? new Map(rm) : null);
+        const pairs = parsePairs(o.raw['442']);
+        if (pairs.length) { nrm = nrm || new Map(); for (const [a, b] of pairs) nrm.set(rmap(a), rmap(b)); }
+        let list = (members.get(g) || []).filter(u => u.raw['62'] === '1');
+        if (o.raw['441'] === '1') list = list.slice().sort((a, b) => rawNum(a, '115', 0) - rawNum(b, '115', 0) || a.x - b.x);
+        for (const u of list) sched(u, t + d, depth + 1, nrm);
+        return;
+      }
+      case 3607: {                                               // Sequence: each activation spawns the next group of the list (each group repeated by its count); mode 436: 0 stop at the end, 1 loop, 2 stay on the last
+        const flat = []; for (const [gr, n] of parsePairs(o.raw['435'])) for (let i = 0; i < Math.max(1, n); i++) flat.push(gr);
+        if (!flat.length) return;
+        const st = seqState.get(o) || { i: 0, last: -1e9 };
+        if (t - st.last < rawNum(o, '437', 0)) return;           // minimum interval
+        const mode = rawNum(o, '436', 0), rs = rawNum(o, '438', 0);
+        if (rs > 0 && t - st.last > rs) st.i = 0;                // reset after a pause
+        let k = st.i;
+        if (k >= flat.length) { if (mode === 1) k = k % flat.length; else if (mode === 2) k = flat.length - 1; else { seqState.set(o, st); return; } }
+        st.i = st.i + 1; st.last = t; seqState.set(o, st);
+        spawnGroup(rmap(flat[k]), t, depth, rm);
+        return;
+      }
+      case 2068: {                                               // Advanced Random: (group, weight) pairs; a preview can't roll dice, so it takes the likeliest one
+        const prs = parsePairs(o.raw['152']); if (!prs.length) return;
+        let best = prs[0]; for (const p of prs) if (p[1] > best[1]) best = p;
+        spawnGroup(rmap(best[0]), t, depth, rm);
+        return;
+      }
+      case 1817: {                                               // Pickup: item 80, count 77, override 139, multiply/divide 88 (1 / 2) with modifier 449
+        const id = rawNum(o, '80', 0), cur = itemGet(id), c = rawNum(o, '77', 0), md = rawNum(o, '88', 0), mod = rawNum(o, '449', 1);
+        setItem(id, o.raw['139'] === '1' ? c : md === 1 ? cur * mod : md === 2 ? (mod ? cur / mod : cur) : cur + c, t, depth);
+        return;
+      }
+      case 1811: {                                               // Instant Count: checked once, now (88: 0 equals, 1 larger, 2 smaller)
+        const v = itemGet(rawNum(o, '80', 0)), n = rawNum(o, '77', 0), cmpo = rawNum(o, '88', 0);
+        if (cmpo === 1 ? v > n : cmpo === 2 ? v < n : v === n) actGroup(o, g, t, depth, rm);
+        return;
+      }
+      case 1611: {                                               // Count: from now on, whenever the item reaches the number
+        const id = rawNum(o, '80', 0), w = { item: id, target: rawNum(o, '77', 0), multi: o.raw['104'] === '1', done: false, on: true, t0: t, act: (tt, dd) => actGroup(o, g, tt, dd, rm) };
+        watchers.push(w);
+        if (itemGet(id) === w.target) { w.done = true; actGroup(o, g, t, depth, rm); }
+        return;
+      }
+      case 3614: {                                               // Time: start 467, stop 473 (474 on), item 80, target 51, mod 470, start paused 471, don't override 468
+        const id = rawNum(o, '80', 0), old = timers.get(id), mod = rawNum(o, '470', 1) || 1;
+        if (o.raw['468'] === '1' && old && old.running && timerGet(id, t) !== 0) return;
+        const start = rawNum(o, '467', 0), stop = o.raw['474'] === '1' && rawNum(o, '473', 0) > start ? rawNum(o, '473', 0) : null;
+        timers.set(id, { base: start, t0: t, mod, running: o.raw['471'] !== '1', stop });
+        if (stop !== null && o.raw['471'] !== '1' && g) spawnGroup(g, t + (stop - start) / mod, depth, rm);
+        return;
+      }
+      case 3615: {                                               // Time Event: spawn the group when the timer reaches the time (473)
+        const id = rawNum(o, '80', 0), T = timers.get(id), want = rawNum(o, '473', 0);
+        if (!T || !T.running || !g) return;
+        const cur = timerGet(id, t); if (want < cur) return;
+        spawnGroup(g, t + (want - cur) / T.mod, depth, rm);
+        return;
+      }
+      case 3616: {                                               // Time Control: 472 on starts the timer, off stops it
+        const id = rawNum(o, '80', 0), T = timers.get(id); if (!T) return;
+        const cur = timerGet(id, t);
+        if (o.raw['472'] === '1') { if (!T.running) { T.running = true; T.base = cur; T.t0 = t; } } else { T.base = cur; T.running = false; }
+        return;
+      }
+      case 3619: {                                               // Item Edit: target = target <assign 480> ((item1 <op 481> item2) <mod op 482> mod), with abs/neg 578, 579 and rounding 485, 486
+        const t1 = rawNum(o, '476', 1), t2 = rawNum(o, '477', 1), tt = rawNum(o, '478', 1), i1 = rawNum(o, '80', 0), i2 = rawNum(o, '95', 0), tg = rmap(rawNum(o, '51', 0));
+        const a = absNeg(itemVal(t1, i1, t), rawNum(o, '578', 0)), has2 = i2 !== 0 || t2 === 3 || t2 === 4 || t2 === 5;
+        let r = has2 ? arith(rawNum(o, '481', 1) || 1, a, absNeg(itemVal(t2, i2, t), rawNum(o, '579', 0))) : a;
+        const mod = rawNum(o, '479', 1); if (mod !== 1) r = arith(rawNum(o, '482', 3) || 3, r, mod);
+        r = rnd(r, rawNum(o, '485', 0));
+        const cur = tt === 2 ? timerGet(tg, t) : itemGet(tg), ao = rawNum(o, '480', 0);
+        const out = rnd(ao === 0 ? r : arith(ao, cur, r), rawNum(o, '486', 0));
+        if (tt === 2) { const T = timers.get(tg); if (T) { T.base = out; T.t0 = t; } else timers.set(tg, { base: out, t0: t, mod: 1, running: false, stop: null }); } else setItem(tg, out, t, depth);
+        return;
+      }
+      case 3620: {                                               // Item Compare: spawn the true group 51 or the false group 71
+        const t1 = rawNum(o, '476', 1), t2 = rawNum(o, '477', 1);
+        const v1 = rnd(arith(rawNum(o, '480', 3) || 3, absNeg(itemVal(t1, rawNum(o, '80', 0), t), rawNum(o, '578', 0)), rawNum(o, '479', 1)), rawNum(o, '485', 0));
+        const v2 = rnd(arith(rawNum(o, '481', 3) || 3, absNeg(itemVal(t2, rawNum(o, '95', 0), t), rawNum(o, '579', 0)), rawNum(o, '483', 1)), rawNum(o, '486', 0));
+        const tol = rawNum(o, '484', 0), c = rawNum(o, '482', 0);
+        const ok = c === 1 ? v1 > v2 : c === 2 ? v1 >= v2 : c === 3 ? v1 < v2 : c === 4 ? v1 <= v2 : Math.abs(v1 - v2) <= tol;
+        spawnGroup(ok ? g : rmap(rawNum(o, '71', 0)), t, depth, rm);
         return;
       }
       case 1346:
@@ -2552,8 +2675,9 @@ function buildTimeline() {
   };
   for (const o of level.objs) {
     if (o.cls !== 'trigger' || !o.raw || o.raw['62'] === '1') continue;      // spawn-triggered ones fire when something spawns them
-    fire(o, tOf(o.x), 0);
+    sched(o, tOf(o.x), 0, null);
   }
+  while (heap.length) { const q = hPop(); fire(q.o, q.t, q.depth, q.rm); }
   const byT = (a, b) => a.t - b.t;
   for (const m of [ev.chan, ev.pulseC, ev.pulseG, ev.move, ev.follow, ev.alpha, ev.toggle, ev.rot, ev.scale, ev.sh]) for (const arr of m.values()) arr.sort(byT);
   for (const arr of [ev.zoom, ev.coff, ev.crot, ev.shock, ev.stops]) arr.sort(byT);
