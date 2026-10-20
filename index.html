@@ -2276,7 +2276,7 @@ function triggerFlags(o) {
 }
 // Property keys used below come from the community object-property table (gd-info-explorer / GD Docs).
 const SHADER_IDS = new Set([2904, 2905, 2907, 2909, 2910, 2911, 2912, 2913, 2914, 2915, 2916, 2917, 2919, 2920, 2921, 2922, 2923]);
-const SIM_IDS = new Set([1912, 1616, 1347, 899, 29, 30, 104, 105, 221, 717, 718, 743, 900, 915, 901, 1006, 1007, 1049, 1268, 1346, 2067, 1913, 1916, 2015]);
+const SIM_IDS = new Set([1912, 1616, 1347, 899, 29, 30, 104, 105, 221, 717, 718, 743, 900, 915, 901, 1006, 1007, 1049, 1268, 1346, 2067, 1913, 1916, 2015, 1814, 3006, 3007, 3008, 3009, 3010, 3011, 3012, 3013, 3014, 3015, 3024, 3607, 2068, 1817, 1811, 1611, 3614, 3615, 3616, 3619, 3620]);
 const isSimulated = o => (SIM_IDS.has(o.id) || SHADER_IDS.has(o.id)) && o.raw['11'] !== '1';
 // every shader value the timeline can drive, with its "off" value; units are the editor's own (screen height = 320 units)
 const SH_DEF = { gray: 0, grayR: 1, grayG: 1, grayB: 1, grayLum: 0, sepia: 0, invR: 0, invG: 0, invB: 0, hue: 0,
@@ -2466,7 +2466,7 @@ function buildTimeline() {
   const xOf = T => { let s = segs[0]; for (const g of segs) { if (g.t0 <= T) s = g; else break; } return s.x0 + Math.max(0, T - s.t0) * s.v; };   // where the player is at time T
 
   const ev = { chan: new Map(), pulseC: new Map(), pulseG: new Map(), move: new Map(), follow: new Map(), alpha: new Map(), toggle: new Map(), rot: new Map(),
-               scale: new Map(), stops: [], zoom: [], coff: [], crot: [], sh: new Map(), shock: [] };
+               scale: new Map(), stops: [], zoom: [], coff: [], crot: [], sh: new Map(), shock: [], area: [], areaEdit: [], areaStop: [] };
   const push = (map, key, e) => { if (!map.has(key)) map.set(key, []); map.get(key).push(e); };
   const members = new Map(), first = new Map();
   for (const o of level.objs) {
@@ -2560,6 +2560,19 @@ function buildTimeline() {
         spawnGroup(pick, t + d, depth, rm);
         return;
       }
+      case 1814: {                                               // Follow Player Y: the group copies the player's height movement for the move time (10) after the delay (91), at the speed (90) capped by max speed (105)
+        const delay = rawNum(o, '91', 0), sp = rawNum(o, '90', 1), mx = rawNum(o, '105', 0), f = mx > 0 ? Math.min(sp, mx / (mx + 1)) : sp, t0 = t + delay;
+        push(ev.move, g, { t: t0, src: groupsOf(o), dur: rawNum(o, '10', 0), e: 0, rate: 2, dx: 0, dy: 0, lockX: false, lockY: true, mx: 1, my: f, px0: xOf(t0), xOf, dyn: null, grp: g });
+        return;
+      }
+      case 3006: case 3007: case 3008: case 3009: case 3010: {  // Area Move / Rotate / Scale / Fade / Tint: an effect that grows with the distance from a centre (see areaParams)
+        ev.area.push({ t, kind: o.id - 3006, p: areaParams(o), eid: rawNum(o, '225', 0), grp: g, ctr: rmap(rawNum(o, '71', 0)), special: rawNum(o, '538', 0), prio: rawNum(o, '341', 0), x: o.x, y: o.y });
+        return;
+      }
+      case 3011: case 3012: case 3013: case 3014: case 3015:   // Edit Area: changes the values of an Area trigger (by effect id, or by target group), gliding over its duration
+        ev.areaEdit.push({ t, dur: rawNum(o, '10', 0), kind: o.id - 3011, byEid: o.raw['255'] === '1', key: g, raw: o.raw });
+        return;
+      case 3024: ev.areaStop.push({ t, eid: rawNum(o, '51', 0) }); return;                 // Area Stop
       case 1616:                                                 // Stop: acts on the triggers whose own group is the target; option 580 = 0 stop, 1 pause, 2 resume (from the exe)
         if (g) ev.stops.push({ t, tgt: g, mode: rawNum(o, '580', 0) }); return;
       case 1347:                                                 // Follow: group g copies the movement of group 71, scaled by the x/y mods, for the duration
@@ -2680,7 +2693,7 @@ function buildTimeline() {
   while (heap.length) { const q = hPop(); fire(q.o, q.t, q.depth, q.rm); }
   const byT = (a, b) => a.t - b.t;
   for (const m of [ev.chan, ev.pulseC, ev.pulseG, ev.move, ev.follow, ev.alpha, ev.toggle, ev.rot, ev.scale, ev.sh]) for (const arr of m.values()) arr.sort(byT);
-  for (const arr of [ev.zoom, ev.coff, ev.crot, ev.shock, ev.stops]) arr.sort(byT);
+  for (const arr of [ev.zoom, ev.coff, ev.crot, ev.shock, ev.stops, ev.area, ev.areaEdit, ev.areaStop]) arr.sort(byT);
   let ang = 0;
   for (const e of ev.crot) { ang = e.add ? ang + e.deg : e.deg; e.to = [ang]; }          // "Add" stacks on the previous rotation
   let maxX = 600; for (const o of level.objs) if (o.x > maxX) maxX = o.x;          // (a loop: spreading 300,000 objects into Math.max overflows the stack)
@@ -2829,6 +2842,73 @@ function moveDisp(ev, g, T, depth, skip) {
   }
   return [dx, dy];
 }
+// ---- Area triggers (Move / Rotate / Scale / Fade / Tint), from the Editor Guide and the trigger keys ----
+// An area has a centre and a length. Each object of the target group is affected by how far it is from the centre: nothing at the centre, the full value at
+// "length" (the deadzone shortens the transition), shaped by the easing. Fade runs from its first opacity at the centre to its second at the edge.
+const AREA_NUM = { len: '222', offX: '220', offY: '252', dz: '282', ease: '242', rate: '243', dir: '262', inward: '276', dist: '218', ang: '231', mvx: '237', mvy: '239', rot: '270', sx: '233', sy: '235', from: '286', to: '275', tint: '265', ch: '260' };
+function areaParams(o) {
+  const n = (k, d) => rawNum(o, k, d), p = {};
+  p.len = n('222', 0); p.offX = n('220', 0); p.offY = n('252', 0); p.dz = n('282', 1) || 1;
+  p.ease = n('242', 0); p.rate = n('243', 2); p.dir = n('262', 0); p.inward = o.raw['276'] === '1';
+  p.dist = n('218', 0); p.ang = n('231', 0); p.rel = o.raw['287'] === '1'; p.xy = o.raw['241'] === '1'; p.mvx = n('237', 0); p.mvy = n('239', 0);
+  p.rot = n('270', 0); p.sx = n('233', 1); p.sy = n('235', 1); p.from = n('286', 1); p.to = n('275', 1);
+  p.tint = n('265', 0); p.ch = n('260', 0); p.main = o.raw['65'] === '1'; p.detail = o.raw['66'] === '1';
+  return p;
+}
+function areaParamsAt(ev, a, T) {                                      // the area's values at time T: its own, then each Edit Area (same kind) that has started, gliding to its new values
+  let p = a.p;
+  for (const e of ev.areaEdit) {
+    if (e.t > T) break;
+    if (e.kind !== a.kind || e.t < a.t) continue;
+    if (e.byEid ? e.key !== a.eid : e.key !== a.grp) continue;
+    const k = e.dur > 0 ? clampN((T - e.t) / e.dur, 0, 1) : 1, q = Object.assign({}, p);
+    for (const [name, key] of Object.entries(AREA_NUM)) if (e.raw[key] !== undefined) q[name] = lerpN(p[name], Number(e.raw[key]) || 0, k);
+    if (e.raw['287'] !== undefined) q.rel = e.raw['287'] === '1';
+    if (e.raw['241'] !== undefined) q.xy = e.raw['241'] === '1';
+    p = q;
+  }
+  return p;
+}
+function areaCenter(a, X) {
+  const W = canvas._w / view.zoom, H = canvas._h / view.zoom, cx = view.cx, cy = view.cy;
+  const sp = a.special;
+  let x, y;
+  if (a.ctr) {
+    const c = timelineModel().first.get(a.ctr);
+    if (c) { x = c.x; y = c.y; const d = moveDisp(timelineModel().ev, a.ctr, tlOfX(X), 0); x += d[0]; y += d[1]; }
+  }
+  if (x === undefined) {
+    if (sp === -1 || sp === -2) { x = X; const ty = traceY(X); y = ty === null ? cy : ty; }
+    else if (sp === -3 || sp === 0) { x = cx; y = cy; }
+    else {
+      const left = cx - W / 2, right = cx + W / 2, bot = cy - H / 2, top = cy + H / 2;
+      x = (sp === -4 || sp === -5 || sp === -6) ? left : (sp === -9 || sp === -10 || sp === -11) ? right : cx;
+      y = (sp === -4 || sp === -7 || sp === -9) ? bot : (sp === -6 || sp === -8 || sp === -11) ? top : cy;
+    }
+  }
+  return [x + a.p.offX, y + a.p.offY];
+}
+const tlOfX = X => timelineModel().tOf(X);
+// the effect of one area on an object at (px, py): { dx, dy, rot, sx, sy, alpha, tint }
+function areaDelta(a, p, px, py, X) {
+  const [cx, cy] = areaCenter(a, X), vx = px - cx, vy = py - cy;
+  const d = p.dir === 1 ? Math.abs(vx) : p.dir === 2 ? Math.abs(vy) : Math.hypot(vx, vy);
+  const len = Math.max(1, p.len) * (p.dz > 0 ? 1 / p.dz : 1);
+  let u = ease(p.ease, p.rate, clampN(d / len, 0, 1));
+  if (p.inward) u = 1 - u;
+  switch (a.kind) {
+    case 0: {                                                          // Move
+      if (p.xy) return { dx: p.mvx * u, dy: p.mvy * u };
+      if (p.rel) { const l = Math.hypot(vx, vy) || 1; return { dx: vx / l * p.dist * u, dy: vy / l * p.dist * u }; }
+      const r = p.ang * Math.PI / 180;                                  // 0 is up, 90 right
+      return { dx: Math.sin(r) * p.dist * u, dy: Math.cos(r) * p.dist * u };
+    }
+    case 1: return { rot: p.rot * u };
+    case 2: return { sx: lerpN(1, p.sx, u), sy: lerpN(1, p.sy, u) };
+    case 3: return { alpha: lerpN(p.from, p.to, u) };
+    default: return { tint: { ch: p.ch, k: clampN(p.tint * u, 0, 1), main: p.main, detail: p.detail } };
+  }
+}
 let traceSig = '';
 function stateAt(X) {
   const pl = window.play, sig = pl && pl.active ? 'on' + pl.attempt : (traceSig.startsWith('on') ? 'end' + traceSig : traceSig);
@@ -2898,7 +2978,13 @@ function stateAt(X) {
     for (const e of ev.shock) sk = Math.max(sk, envelope(e, T) * e.amp);
     fxv.shock = sk;
   }
-  tl.cacheX = X; tl.cache = { T, channels, groups, cam, fx: fxv };
+  const areas = [];
+  for (const a of ev.area) {
+    if (a.t > T) break;
+    if (ev.areaStop.some(z => z.t >= a.t && z.t <= T && z.eid === a.eid && a.eid)) continue;
+    areas.push({ a, p: areaParamsAt(ev, a, T) });
+  }
+  tl.cacheX = X; tl.cache = { T, channels, groups, cam, fx: fxv, areas };
   return tl.cache;
 }
 
@@ -2927,8 +3013,8 @@ function channelHexP(id, kind) {
 }
 groupStateFor = function (o) {
   if (!tl.on || !previewOn() || !level || !o.groups) return null;
-  const st = stateAt(tlPos()).groups;
-  if (!st.size) return null;
+  const S = stateAt(tlPos()), st = S.groups;
+  if (!st.size && !S.areas.length) return null;
   let dx = 0, dy = 0, alpha = 1, hidden = false, rot = 0, sx = 1, sy = 1, center = 0, lock = false, pulse = null, any = false;
   for (const part of groupsOf(o)) {
     const g = st.get(part);
@@ -2937,6 +3023,20 @@ groupStateFor = function (o) {
     rot += g.rot; sx *= g.sx; sy *= g.sy; lock = lock || g.lock;
     if (g.center && !center) center = g.center;
     if (g.pulse) pulse = g.pulse;
+  }
+  if (S.areas.length) {                                               // Area triggers: per object, by its own distance from each area's centre (the highest priority of each kind wins)
+    const mine = groupsOf(o), best = [];
+    for (const e of S.areas) if (mine.includes(e.a.grp) && (!best[e.a.kind] || e.a.prio >= best[e.a.kind].a.prio)) best[e.a.kind] = e;
+    const X = tlPos();
+    for (const e of best) {
+      if (!e) continue;
+      const r = areaDelta(e.a, e.p, o.x + dx, o.y + dy, X);
+      any = true;
+      if (r.dx) dx += r.dx; if (r.dy) dy += r.dy; if (r.rot) rot += r.rot;
+      if (r.sx !== undefined) { sx *= r.sx; sy *= r.sy; }
+      if (r.alpha !== undefined) alpha *= r.alpha;
+      if (r.tint && r.tint.k > 0) { const c = chan(r.tint.ch); if (c) pulse = { r: c.r, g: c.g, b: c.b, k: r.tint.k, main: r.tint.main, detail: r.tint.detail }; }
+    }
   }
   if (!any) return null;
   let cx = null, cy = null;
